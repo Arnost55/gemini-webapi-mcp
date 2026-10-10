@@ -11,6 +11,7 @@ import hashlib
 import html
 import secrets
 import time
+import os
 from dataclasses import dataclass
 from threading import RLock
 from urllib.parse import urlencode
@@ -123,7 +124,21 @@ class LocalOAuth:
     def authorize_page(self, client_id: str, redirect_uri: str, challenge: str, state: str) -> str:
         code = self.begin(client_id, redirect_uri, challenge, subject="local-user")
         finish = self.issuer + "/oauth/complete?code=" + code + "&state=" + state
-        return "<html><body><h1>Connect Gemini account</h1><p>Complete Gemini login in Chromium, then continue.</p><a href='" + html.escape(finish, quote=True) + "'>Continue after login</a></body></html>"
+        browser_url = os.environ.get("GEMINI_NOVNC_PUBLIC_URL", "")
+        browser_link = (
+            "<a class='button secondary' target='_blank' rel='noopener' href='" + html.escape(browser_url, quote=True) + "'>Open Chromium login</a>"
+            if browser_url else
+            "<div class='notice'>Chromium display is not published yet. Set <code>GEMINI_NOVNC_PUBLIC_URL</code> to your protected noVNC URL, or complete login in the container browser profile.</div>"
+        )
+        return """<!doctype html>
+<html><head><meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>Connect Gemini account</title><style>
+body{margin:0;background:#0b1020;color:#eef2ff;font:16px system-ui,sans-serif}.card{max-width:560px;margin:10vh auto;padding:32px;border:1px solid #2b3655;border-radius:18px;background:#121a2d;box-shadow:0 20px 60px #0006}h1{margin-top:0;font-size:28px}p{color:#b8c2dc;line-height:1.5}.steps{margin:24px 0;padding:0;list-style:none}.steps li{padding:12px 0;border-bottom:1px solid #26304a}.button{display:inline-block;padding:12px 16px;border-radius:10px;background:#8ab4ff;color:#08101f;text-decoration:none;font-weight:700;margin:8px 8px 8px 0}.secondary{background:#273653;color:#eef2ff}.notice{margin-top:18px;padding:14px;border-radius:10px;background:#211d13;color:#f4d58a;line-height:1.45}code{font-family:ui-monospace,monospace}.small{font-size:13px;color:#8793b0}</style></head>
+<body><main class='card'><h1>Connect Gemini account</h1>
+<p>This authorizes the MCP connection. Gemini Web login is completed in the isolated Chromium profile on your server.</p>
+<ol class='steps'><li><b>1.</b> Open Chromium login.</li><li><b>2.</b> Sign in to the Google account you want to connect.</li><li><b>3.</b> Return here and continue.</li></ol>
+""" + browser_link + "<a class='button' href='" + html.escape(finish, quote=True) + "'>Continue after login</a>" + """
+<p class='small'>This page never displays or transmits your Google cookies. The authorization link expires after a short time and can be used once.</p></main></body></html>"""
 
     def completion_redirect(self, code: str, subject: str) -> str:
         with self._lock:
