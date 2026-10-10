@@ -111,6 +111,35 @@ The session command reports only safe state such as `ready` or
 `login_required`; it never prints cookie values. A live Gemini check requires
 a bootstrapped Google session and is separate from the unit test suite.
 
+## Docker
+
+Build and start the included image:
+
+```bash
+cp accounts.example.json accounts.json
+docker compose build
+docker compose up -d
+docker compose logs -f gemini-mcp
+```
+
+The container listens on port 8000, while Compose binds it to loopback.
+Chromium profiles and status data persist in the `gemini-state` volume. Keep
+`accounts.json` outside Git and replace the example OAuth subjects.
+
+## Public HTTPS URL
+
+The MCP server supports Streamable HTTP, but it does not manufacture a public
+URL. Put an HTTPS reverse proxy or MCP tunnel in front of the loopback listener:
+
+```text
+https://gemini-mcp.example.com  ->  http://127.0.0.1:8000
+```
+
+Cloudflare Tunnel, Tailscale Funnel, an SSH tunnel with a secured proxy, or a
+normal VPS reverse proxy can provide reachability. The public layer must
+enforce HTTPS, OAuth 2.1/PKCE, origin and CSRF checks, rate limits, and account
+mapping. Never expose port 8000 directly to the Internet.
+
 ## Current integration boundaries
 
 Implemented library components include model discovery, MCP transport startup,

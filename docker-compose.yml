@@ -1,0 +1,18 @@
+services:
+  gemini-mcp:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - gemini-state:/var/lib/gemini-mcp
+      - ./accounts.json:/etc/gemini-webapi-mcp/accounts.json:ro
+    environment:
+      GEMINI_ACCOUNT_CONFIG: /etc/gemini-webapi-mcp/accounts.json
+      GEMINI_PROFILE_ROOT: /var/lib/gemini-mcp/accounts
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+volumes:
+  gemini-state:

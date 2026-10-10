@@ -1,0 +1,6 @@
+{
+  "subjects": {"replace-with-oauth-subject": ["personal"]},
+  "accounts": {
+    "personal": {"scopes": ["gemini:use"], "requests_per_minute": 30, "enabled": true}
+  }
+}

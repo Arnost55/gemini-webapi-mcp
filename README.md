@@ -31,6 +31,8 @@
 - **Auto-authentication** via Chrome browser cookies
 - **Dynamic model discovery** through `gemini_list_models`, with capability metadata and explicit fallbacks
 - **STDIO and Streamable HTTP** transports for local clients and authenticated MCP gateways
+- **Docker and Docker Compose** deployment with persistent account volumes
+- **Public URL ready** through an external HTTPS reverse proxy or MCP tunnel
 - **Persistent Chromium session supervisor** with five-minute checks, reload recovery, and login-required status
 - **Isolated multi-account profiles** with explicit OAuth-subject mapping and no cross-account fallback
 - **Per-account scopes, maintenance mode, request limits, and safe status files**
