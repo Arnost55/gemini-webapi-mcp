@@ -39,7 +39,7 @@
 - **Secure browser handoff state** for one-time login URLs, explicit approval, expiry, and replay protection
 - **Encrypted dynamic account registry** using AES-256-GCM; Base64 is only an encoding envelope
 - **Account lifecycle controls** for ready, disabled, and revoked profiles
-- **Authentik gateway deployment path** for OAuth/OIDC identity and PKCE
+- **Local OAuth/DCR foundation** for ChatGPT MCP clients with PKCE
 
 ## Quick Start
 
@@ -51,6 +51,21 @@ The server supports STDIO for local clients and Streamable HTTP for an
 authenticated gateway. Model discovery is available through
 `gemini_list_models`; unavailable discovery data is reported with explicit
 fallback metadata.
+
+### ChatGPT dynamic registration and connected accounts
+
+Streamable HTTP also publishes local OAuth 2.1 metadata and supports dynamic
+client registration at `/oauth/register`. Public clients must use PKCE
+(`S256`); redirect URIs are validated and authorization codes are single-use.
+This authenticates ChatGPT to the MCP server. It is not Google OAuth: Gemini
+accounts are linked separately through the Chromium browser handoff, with one
+isolated profile and encrypted session per account.
+
+The MCP exposes `gemini_list_accounts` and `gemini_select_account` for the
+connected-account workflow. ChatGPT owns the visual account screen; the MCP
+provides the metadata, authorization flow, identities, and account state that
+screen consumes. Set `GEMINI_PUBLIC_URL` to the HTTPS origin before using
+remote OAuth.
 
 See [`docs/install.md`](docs/install.md) for complete local, Debian/Proxmox,
 browser, account, and gateway installation instructions. See

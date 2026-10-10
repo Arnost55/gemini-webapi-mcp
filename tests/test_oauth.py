@@ -1,0 +1,34 @@
+import base64
+import hashlib
+
+import pytest
+
+from gemini_webapi_mcp.oauth import LocalOAuth
+
+
+def challenge(verifier: str) -> str:
+    return base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+
+
+def test_dynamic_registration_and_pkce_are_one_time():
+    oauth = LocalOAuth("https://gemini.example")
+    client = oauth.register({"client_name": "ChatGPT Gemini", "redirect_uris": ["https://chat.openai.com/aip/callback"], "token_endpoint_auth_method": "none"})
+    verifier = "verifier-value-that-is-long-enough-for-pkce-123456"
+    code = oauth.begin(client["client_id"], client["redirect_uris"][0], challenge(verifier))
+    oauth.complete(code, "gemini-account-a")
+    token = oauth.exchange(code, client["client_id"], client["redirect_uris"][0], verifier)
+    assert oauth.subject_for(token["access_token"]) == "gemini-account-a"
+    with pytest.raises(ValueError):
+        oauth.exchange(code, client["client_id"], client["redirect_uris"][0], verifier)
+
+
+def test_registration_rejects_untrusted_redirect_uri():
+    oauth = LocalOAuth("https://gemini.example")
+    with pytest.raises(ValueError):
+        oauth.register({"client_name": "bad", "redirect_uris": ["http://evil.example/callback"]})
+
+
+def test_each_registration_gets_a_distinct_client():
+    oauth = LocalOAuth("https://gemini.example")
+    args = {"client_name": "ChatGPT Gemini", "redirect_uris": ["https://chat.openai.com/aip/callback"]}
+    assert oauth.register(args)["client_id"] != oauth.register(args)["client_id"]

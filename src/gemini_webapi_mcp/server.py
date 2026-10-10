@@ -22,6 +22,9 @@ from typing import Optional
 
 from mcp.server.fastmcp import FastMCP, Context
 from .models import capabilities_json
+from .oauth import LocalOAuth
+from starlette.requests import Request
+from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 
 # ---------------------------------------------------------------------------
 # Logging (stderr only — stdout reserved for MCP stdio transport)
@@ -327,6 +330,100 @@ async def app_lifespan(server):
 
 
 mcp = FastMCP("gemini-webapi-mcp", lifespan=app_lifespan)
+
+# Local OAuth is intentionally independent from Google authentication.  It
+# authenticates the MCP client; the browser handoff links a Gemini account.
+_oauth = LocalOAuth(os.environ.get("GEMINI_PUBLIC_URL", "http://localhost:8000"))
+
+
+@mcp.custom_route("/.well-known/oauth-protected-resource", methods=["GET"])
+async def oauth_resource_metadata(request: Request):
+    issuer = _oauth.issuer
+    return JSONResponse({"resource": issuer + "/mcp", "authorization_servers": [issuer], "scopes_supported": ["openid", "profile"]})
+
+
+@mcp.custom_route("/.well-known/oauth-authorization-server", methods=["GET"])
+async def oauth_server_metadata(request: Request):
+    issuer = _oauth.issuer
+    return JSONResponse({
+        "issuer": issuer,
+        "authorization_endpoint": issuer + "/oauth/authorize",
+        "token_endpoint": issuer + "/oauth/token",
+        "registration_endpoint": issuer + "/oauth/register",
+        "scopes_supported": ["openid", "profile"],
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none", "client_secret_post", "client_secret_basic"],
+    })
+
+
+@mcp.custom_route("/oauth/register", methods=["POST"])
+async def oauth_register(request: Request):
+    try:
+        return JSONResponse(_oauth.register(await request.json()), status_code=201)
+    except (ValueError, TypeError) as exc:
+        return JSONResponse({"error": "invalid_client_metadata", "error_description": str(exc)}, status_code=400)
+
+
+@mcp.custom_route("/oauth/authorize", methods=["GET"])
+async def oauth_authorize(request: Request):
+    q = request.query_params
+    try:
+        page = _oauth.authorize_page(q["client_id"], q["redirect_uri"], q["code_challenge"], q.get("state", ""))
+        return HTMLResponse(page)
+    except (KeyError, ValueError) as exc:
+        return PlainTextResponse(str(exc), status_code=400)
+
+
+@mcp.custom_route("/oauth/complete", methods=["GET"])
+async def oauth_complete(request: Request):
+    """Finish the browser handoff, then redirect with the one-time code."""
+    try:
+        target = _oauth.completion_redirect(request.query_params["code"], "local-user")
+        state = request.query_params.get("state")
+        if state:
+            target += ("&" if "?" in target else "?") + "state=" + state
+        return RedirectResponse(target, status_code=302)
+    except (KeyError, ValueError) as exc:
+        return PlainTextResponse(str(exc), status_code=400)
+
+
+@mcp.custom_route("/oauth/token", methods=["POST"])
+async def oauth_token(request: Request):
+    form = await request.form()
+    try:
+        if form.get("grant_type") != "authorization_code":
+            raise ValueError("only authorization_code is supported")
+        result = _oauth.exchange(str(form["code"]), str(form["client_id"]), str(form["redirect_uri"]), str(form["code_verifier"]))
+        return JSONResponse(result)
+    except (KeyError, ValueError) as exc:
+        return JSONResponse({"error": "invalid_grant", "error_description": str(exc)}, status_code=400)
+
+
+@mcp.tool(name="gemini_list_accounts", annotations={"title": "List Connected Gemini Accounts", "readOnlyHint": True})
+async def gemini_list_accounts(ctx: Context) -> dict:
+    """List safe metadata for Gemini accounts connected to this MCP identity."""
+    from .registry import DynamicAccountRegistry
+    path = os.environ.get("GEMINI_REGISTRY_PATH")
+    key = os.environ.get("GEMINI_REGISTRY_KEY")
+    if not path or not key:
+        return {"accounts": [], "warning": "account_registry_not_configured"}
+    subject = _oauth.subject_for("") or "local-user"
+    return {"accounts": DynamicAccountRegistry(path, key).list_safe(subject)}
+
+
+@mcp.tool(name="gemini_select_account", annotations={"title": "Select Gemini Account"})
+async def gemini_select_account(account_id: str, ctx: Context) -> dict:
+    """Set the requested account as the explicit account for a future session."""
+    from .registry import DynamicAccountRegistry
+    path = os.environ.get("GEMINI_REGISTRY_PATH")
+    key = os.environ.get("GEMINI_REGISTRY_KEY")
+    if not path or not key:
+        raise RuntimeError("account registry is not configured")
+    subject = _oauth.subject_for("") or "local-user"
+    account = DynamicAccountRegistry(path, key).select(subject, account_id)
+    return {"selected": account["account"], "profile": account.get("profile"), "state": account.get("state")}
 
 
 @mcp.tool(
