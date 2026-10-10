@@ -37,6 +37,30 @@ configure its scopes to allow only the tools you intend to expose. This makes
 the ChatGPT integration testable without confusing ChatGPT identity with Google
 account authentication.
 
+## Persistent Gemini Web session
+
+The optional session supervisor keeps a dedicated Chromium profile for Gemini
+Web. A human completes Google login once in headed mode; later checks run
+headless and expose only safe status metadata. Cookie values are never printed,
+returned by MCP, or written to logs.
+
+```bash
+uv sync --extra browser
+uv run playwright install chromium
+
+# One-time login bootstrap on a machine with a desktop session
+uv run gemini-web-session --profile-dir /var/lib/gemini-mcp/chromium --headed --once
+
+# Service mode: check every five minutes by default
+uv run gemini-web-session --profile-dir /var/lib/gemini-mcp/chromium
+```
+
+Each check loads Gemini, classifies login redirects, reloads once when the
+session appears invalid, and then records `login_required` if the retry still
+needs login. A status of `error` means the browser check failed; it does not
+include exception text that could contain secrets. The Chromium profile must
+be readable only by the service account.
+
 ## Video generation
 
 The upstream client currently provides video *analysis* through file upload or
