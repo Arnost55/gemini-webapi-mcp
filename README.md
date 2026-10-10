@@ -6,10 +6,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/AndyShaman/gemini-webapi-mcp/blob/main/LICENSE"><img src="https://img.shields.io/github/license/AndyShaman/gemini-webapi-mcp?style=flat-square&color=green" alt="License"></a>
+  <a href="https://github.com/Arnost55/gemini-webapi-mcp/blob/main/LICENSE"><img src="https://img.shields.io/github/license/AndyShaman/gemini-webapi-mcp?style=flat-square&color=green" alt="License"></a>
   <img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square&logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/MCP-compatible-8A2BE2?style=flat-square" alt="MCP">
-  <a href="https://github.com/AndyShaman/gemini-webapi-mcp/stargazers"><img src="https://img.shields.io/github/stars/AndyShaman/gemini-webapi-mcp?style=flat-square&color=yellow" alt="Stars"></a>
+  <a href="https://github.com/Arnost55/gemini-webapi-mcp/stargazers"><img src="https://img.shields.io/github/stars/AndyShaman/gemini-webapi-mcp?style=flat-square&color=yellow" alt="Stars"></a>
 </p>
 
 <p align="center">
@@ -46,9 +46,10 @@ authenticated gateway. Model discovery is available through
 `gemini_list_models`; unavailable discovery data is reported with explicit
 fallback metadata.
 
-See [`docs/gateway.md`](docs/gateway.md) for HTTPS gateway deployment, OAuth
-boundaries, persistent Chromium sessions, multi-account isolation, scopes, and
-rate limits.
+See [`docs/install.md`](docs/install.md) for complete local, Debian/Proxmox,
+browser, account, and gateway installation instructions. See
+[`docs/gateway.md`](docs/gateway.md) for OAuth boundaries, persistent sessions,
+multi-account isolation, scopes, and rate limits.
 
 ### Multi-account Gemini sessions
 
@@ -120,13 +121,13 @@ Open Chrome, go to [gemini.google.com](https://gemini.google.com) and sign in.
 **From GitHub (no clone needed):**
 
 ```bash
-uv run --with "gemini-webapi-mcp @ git+https://github.com/AndyShaman/gemini-webapi-mcp.git" gemini-webapi-mcp
+uv run --with "gemini-webapi-mcp @ git+https://github.com/Arnost55/gemini-webapi-mcp.git" gemini-webapi-mcp
 ```
 
 **Local install:**
 
 ```bash
-git clone https://github.com/AndyShaman/gemini-webapi-mcp.git
+git clone https://github.com/Arnost55/gemini-webapi-mcp.git
 cd gemini-webapi-mcp
 uv sync
 uv run gemini-webapi-mcp
@@ -138,7 +139,7 @@ uv run gemini-webapi-mcp
 <summary><b>Claude Code</b></summary>
 
 ```bash
-claude mcp add-json gemini '{"command":"uv","args":["run","--with","gemini-webapi-mcp @ git+https://github.com/AndyShaman/gemini-webapi-mcp.git","gemini-webapi-mcp"]}'
+claude mcp add-json gemini '{"command":"uv","args":["run","--with","gemini-webapi-mcp @ git+https://github.com/Arnost55/gemini-webapi-mcp.git","gemini-webapi-mcp"]}'
 ```
 
 Or add manually to `.mcp.json` in your project root:
@@ -148,7 +149,7 @@ Or add manually to `.mcp.json` in your project root:
   "mcpServers": {
     "gemini": {
       "command": "uv",
-      "args": ["run", "--with", "gemini-webapi-mcp @ git+https://github.com/AndyShaman/gemini-webapi-mcp.git", "gemini-webapi-mcp"]
+      "args": ["run", "--with", "gemini-webapi-mcp @ git+https://github.com/Arnost55/gemini-webapi-mcp.git", "gemini-webapi-mcp"]
     }
   }
 }
@@ -168,7 +169,7 @@ Add to Claude Desktop config:
   "mcpServers": {
     "gemini": {
       "command": "uv",
-      "args": ["run", "--with", "gemini-webapi-mcp @ git+https://github.com/AndyShaman/gemini-webapi-mcp.git", "gemini-webapi-mcp"]
+      "args": ["run", "--with", "gemini-webapi-mcp @ git+https://github.com/Arnost55/gemini-webapi-mcp.git", "gemini-webapi-mcp"]
     }
   }
 }
@@ -186,7 +187,7 @@ Use the standard MCP stdio config:
   "mcpServers": {
     "gemini": {
       "command": "uv",
-      "args": ["run", "--with", "gemini-webapi-mcp @ git+https://github.com/AndyShaman/gemini-webapi-mcp.git", "gemini-webapi-mcp"]
+      "args": ["run", "--with", "gemini-webapi-mcp @ git+https://github.com/Arnost55/gemini-webapi-mcp.git", "gemini-webapi-mcp"]
     }
   }
 }
@@ -214,7 +215,7 @@ cp -r skill ~/.claude/skills/gemini-mcp
 Run the server manually — if it initializes without errors, everything works:
 
 ```bash
-uv run --with "gemini-webapi-mcp @ git+https://github.com/AndyShaman/gemini-webapi-mcp.git" gemini-webapi-mcp
+uv run --with "gemini-webapi-mcp @ git+https://github.com/Arnost55/gemini-webapi-mcp.git" gemini-webapi-mcp
 ```
 
 Then open Claude Code or Claude Desktop and try: *"Generate a watercolor cat image with Gemini"*.
@@ -246,7 +247,7 @@ If cookie auto-detection fails, set them manually:
   "mcpServers": {
     "gemini": {
       "command": "uv",
-      "args": ["run", "--with", "gemini-webapi-mcp @ git+https://github.com/AndyShaman/gemini-webapi-mcp.git", "gemini-webapi-mcp"],
+      "args": ["run", "--with", "gemini-webapi-mcp @ git+https://github.com/Arnost55/gemini-webapi-mcp.git", "gemini-webapi-mcp"],
       "env": {
         "GEMINI_PSID": "your__Secure-1PSID_value",
         "GEMINI_PSIDTS": "your__Secure-1PSIDTS_value"
@@ -343,4 +344,5 @@ The watermark-removal algorithm (Reverse Alpha Blending) was originally inspired
 [AGPL-3.0](LICENSE) — free to use, modify, and distribute, provided the source code remains open.
 
 **[@AndyShaman](https://github.com/AndyShaman)** · [gemini-webapi-mcp](https://github.com/AndyShaman/gemini-webapi-mcp)
+
 
