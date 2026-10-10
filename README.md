@@ -34,6 +34,7 @@
 - **Persistent Chromium session supervisor** with five-minute checks, reload recovery, and login-required status
 - **Isolated multi-account profiles** with explicit OAuth-subject mapping and no cross-account fallback
 - **Per-account scopes, maintenance mode, request limits, and safe status files**
+- **Secure browser handoff state** for one-time login URLs, explicit approval, expiry, and replay protection
 
 ## Quick Start
 
@@ -50,6 +51,11 @@ See [`docs/install.md`](docs/install.md) for complete local, Debian/Proxmox,
 browser, account, and gateway installation instructions. See
 [`docs/gateway.md`](docs/gateway.md) for OAuth boundaries, persistent sessions,
 multi-account isolation, scopes, and rate limits.
+
+The browser handoff state machine is available in
+`gemini_webapi_mcp.handoff`. It provides the security lifecycle for a gateway
+login page, but this repository does not yet ship a public web UI or claim that
+Google OAuth for Gemini Web is available.
 
 ### Multi-account Gemini sessions
 

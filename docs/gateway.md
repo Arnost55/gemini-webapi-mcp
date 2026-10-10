@@ -83,6 +83,38 @@ per-account request limits, and safe status files. A subject mapped to several
 accounts must select one explicitly. Keep registry and status files outside
 the repository and readable only by the service account.
 
+## Browser handoff login
+
+When the gateway needs to connect a Google account without requiring a local
+browser GUI, it can expose a short-lived handoff page:
+
+```text
+1. Create login session for account: work
+2. Open Google login in the isolated Chromium profile
+3. Wait for Gemini session verification
+4. Ask the user to approve: Allow this account
+5. Consume the one-time handoff
+```
+
+The repository provides the state machine in
+`gemini_webapi_mcp.handoff.HandoffManager`:
+
+```text
+pending → verified → approved → used
+pending → expired
+any active state → revoked
+```
+
+The gateway must generate its own HTTPS route, bind the handoff to the
+validated OAuth subject and selected account, and pass the selected profile to
+the session manager. Tokens must be stored hashed, expire quickly, be
+single-use, and never contain cookies or Google credentials. The user must
+approve after the Gemini page is verified as ready.
+
+This is a browser handoff, not Google OAuth. A normal OAuth redirect can
+authenticate the MCP caller to the gateway, but it does not transfer Gemini
+Web cookies into a server-side browser profile.
+
 ## Video generation
 
 The upstream client currently provides video *analysis* through file upload or

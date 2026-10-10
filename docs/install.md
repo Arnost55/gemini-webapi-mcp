@@ -110,3 +110,18 @@ uv run gemini-web-session --profile-dir /var/lib/gemini-mcp/accounts/personal --
 The session command reports only safe state such as `ready` or
 `login_required`; it never prints cookie values. A live Gemini check requires
 a bootstrapped Google session and is separate from the unit test suite.
+
+## Current integration boundaries
+
+Implemented library components include model discovery, MCP transport startup,
+Chromium session supervision, account policy selection, rate limiting, safe
+status persistence, and browser handoff token lifecycle management.
+
+The deployment still needs a gateway application or reviewed MCP gateway to
+connect these components to HTTP routes. That gateway must provide OAuth 2.1
+metadata, PKCE S256, access-token validation, subject and scope extraction,
+login handoff routes, approval UI, HTTPS, CSRF protection, secure cookies,
+rate-limit responses, and audit logs.
+
+Do not describe the deployment as Google OAuth. The user still signs into
+Gemini Web inside the selected isolated browser profile.
