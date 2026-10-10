@@ -354,7 +354,10 @@ if _public_url:
 
 # Local OAuth is intentionally independent from Google authentication.  It
 # authenticates the MCP client; the browser handoff links a Gemini account.
-_oauth = LocalOAuth(os.environ.get("GEMINI_PUBLIC_URL", "http://localhost:8000"))
+_oauth = LocalOAuth(
+    os.environ.get("GEMINI_PUBLIC_URL", "http://localhost:8000"),
+    state_path=os.environ.get("GEMINI_OAUTH_STATE_PATH", "/var/lib/gemini-mcp/oauth-state.json"),
+)
 
 
 @mcp.custom_route("/.well-known/oauth-protected-resource", methods=["GET"])

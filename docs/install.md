@@ -161,8 +161,21 @@ docker run -d \
   -v "$PWD/accounts.json:/etc/gemini-webapi-mcp/accounts.json:ro" \
   -e GEMINI_ACCOUNT_CONFIG=/etc/gemini-webapi-mcp/accounts.json \
   -e GEMINI_PROFILE_ROOT=/var/lib/gemini-mcp/accounts \
+  -e GEMINI_OAUTH_STATE_PATH=/var/lib/gemini-mcp/oauth-state.json \
   ghcr.io/arnost55/gemini-webapi-mcp:latest
 ```
+
+Keep the same `gemini-state` volume across image updates and container
+recreation. It stores dynamic OAuth client registrations, OAuth tokens, the
+encrypted account registry, and Chromium profiles. Reusing that volume keeps
+the existing ChatGPT MCP connection registered; changing or deleting it
+requires a new dynamic registration.
+
+The container starts one Chromium owner for the shared `default` profile. A
+second connector reuses that session instead of starting a competing browser.
+For simultaneous Google accounts, assign separate profile directories under
+`GEMINI_PROFILE_ROOT` and map callers to those accounts through the encrypted
+registry. Do not point two accounts at the same Chromium profile.
 
 ### Compose with the published image
 
@@ -182,6 +195,7 @@ services:
       GEMINI_REGISTRY_PATH: /var/lib/gemini-mcp/registry.json.enc
       GEMINI_REGISTRY_KEY_FILE: /run/secrets/gemini_registry_key
       GEMINI_PROFILE_ROOT: /var/lib/gemini-mcp/accounts
+      GEMINI_OAUTH_STATE_PATH: /var/lib/gemini-mcp/oauth-state.json
     security_opt:
       - no-new-privileges:true
     cap_drop:

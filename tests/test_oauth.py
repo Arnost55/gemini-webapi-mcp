@@ -1,5 +1,6 @@
 import base64
 import hashlib
+from pathlib import Path
 
 import pytest
 
@@ -32,3 +33,18 @@ def test_each_registration_gets_a_distinct_client():
     oauth = LocalOAuth("https://gemini.example")
     args = {"client_name": "ChatGPT Gemini", "redirect_uris": ["https://chat.openai.com/aip/callback"]}
     assert oauth.register(args)["client_id"] != oauth.register(args)["client_id"]
+
+
+def test_registration_and_tokens_survive_process_restart(tmp_path: Path):
+    state_path = tmp_path / "oauth-state.json"
+    args = {"client_name": "ChatGPT Gemini", "redirect_uris": ["https://chat.openai.com/aip/callback"]}
+    first = LocalOAuth("https://gemini.example", state_path=str(state_path))
+    client = first.register(args)
+    verifier = "verifier-value-that-is-long-enough-for-persistence-123456"
+    code = first.begin(client["client_id"], client["redirect_uris"][0], challenge(verifier))
+    first.complete(code, "gemini-account-a")
+    token = first.exchange(code, client["client_id"], client["redirect_uris"][0], verifier)
+
+    restarted = LocalOAuth("https://gemini.example", state_path=str(state_path))
+    assert client["client_id"] in restarted._clients
+    assert restarted.subject_for(token["access_token"]) == "gemini-account-a"

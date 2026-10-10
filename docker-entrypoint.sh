@@ -17,9 +17,18 @@ websockify --web=/usr/share/novnc/ "0.0.0.0:${GEMINI_NOVNC_PORT:-6080}" "127.0.0
 
 # Put the persistent Gemini Chromium profile on the virtual display so the
 # login handoff has an actual browser window to show through noVNC.
-mkdir -p "${GEMINI_PROFILE_ROOT:-/var/lib/gemini-mcp/accounts}/default"
-uv run gemini-web-session \
-  --profile-dir "${GEMINI_PROFILE_ROOT:-/var/lib/gemini-mcp/accounts}/default" \
-  --headed >/tmp/gemini-browser.log 2>&1 &
+browser_profile="${GEMINI_PROFILE_ROOT:-/var/lib/gemini-mcp/accounts}/default"
+mkdir -p "$browser_profile"
+browser_lock="${GEMINI_PROFILE_ROOT:-/var/lib/gemini-mcp/accounts}/.browser-owner"
+if [ -d "$browser_lock" ] && [ -r "$browser_lock/pid" ] && ! kill -0 "$(cat "$browser_lock/pid")" 2>/dev/null; then
+  rm -rf "$browser_lock"
+fi
+if mkdir "$browser_lock" 2>/dev/null; then
+  echo "$$" > "$browser_lock/pid"
+  trap 'rm -rf "$browser_lock" 2>/dev/null || true' EXIT INT TERM
+  uv run gemini-web-session --profile-dir "$browser_profile" --headed >/tmp/gemini-browser.log 2>&1 &
+else
+  echo "Gemini Chromium is already owned by another process; reusing the shared profile" >&2
+fi
 
 exec uv run gemini-webapi-mcp --transport streamable-http --host 0.0.0.0 --port 8000

@@ -12,6 +12,8 @@ import html
 import secrets
 import time
 import os
+import json
+from pathlib import Path
 from dataclasses import dataclass
 from threading import RLock
 from urllib.parse import urlencode
@@ -48,13 +50,47 @@ class AuthorizationCode:
 class LocalOAuth:
     """In-memory OAuth state; persistent client storage can be added later."""
 
-    def __init__(self, issuer: str, ttl: int = 300):
+    def __init__(self, issuer: str, ttl: int = 300, state_path: str | None = None):
         self.issuer = issuer.rstrip("/")
         self.ttl = ttl
+        self.state_path = Path(state_path or os.environ.get("GEMINI_OAUTH_STATE_PATH", "")) if (state_path or os.environ.get("GEMINI_OAUTH_STATE_PATH")) else None
         self._clients: dict[str, Client] = {}
         self._codes: dict[str, AuthorizationCode] = {}
         self._tokens: dict[str, tuple[str, str, float]] = {}
         self._lock = RLock()
+        self._load_state()
+
+    def _load_state(self) -> None:
+        if self.state_path is None or not self.state_path.exists():
+            return
+        try:
+            data = json.loads(self.state_path.read_text(encoding="utf-8"))
+            for item in data.get("clients", []):
+                client = Client(**item)
+                self._clients[client.client_id] = client
+            for token, item in data.get("tokens", {}).items():
+                self._tokens[token] = (item["subject"], item["kind"], float(item["expires_at"]))
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise RuntimeError(f"invalid persisted OAuth state: {self.state_path}") from exc
+
+    def _save_state(self) -> None:
+        if self.state_path is None:
+            return
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "clients": [
+                {"client_id": c.client_id, "client_name": c.client_name, "redirect_uris": list(c.redirect_uris),
+                 "token_endpoint_auth_method": c.token_endpoint_auth_method, "created_at": c.created_at}
+                for c in self._clients.values()
+            ],
+            "tokens": {
+                token: {"subject": subject, "kind": kind, "expires_at": expires}
+                for token, (subject, kind, expires) in self._tokens.items()
+            },
+        }
+        temporary = self.state_path.with_suffix(self.state_path.suffix + ".tmp")
+        temporary.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+        os.replace(temporary, self.state_path)
 
     def register(self, body: dict) -> dict:
         redirects = tuple(body.get("redirect_uris") or ())
@@ -69,6 +105,7 @@ class LocalOAuth:
         client = Client(client_id, str(body["client_name"]), redirects, method, int(time.time()))
         with self._lock:
             self._clients[client_id] = client
+            self._save_state()
         result = {
             "client_id": client_id,
             "client_name": client.client_name,
@@ -112,6 +149,7 @@ class LocalOAuth:
             refresh = _b64(secrets.token_bytes(32))
             self._tokens[access] = (item.subject, "access", time.time() + 3600)
             self._tokens[refresh] = (item.subject, "refresh", time.time() + 2592000)
+            self._save_state()
             return {"access_token": access, "token_type": "Bearer", "expires_in": 3600, "refresh_token": refresh, "scope": "openid profile"}
 
     def subject_for(self, token: str) -> str | None:
