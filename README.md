@@ -1,8 +1,8 @@
 <h1 align="center">gemini-webapi-mcp</h1>
 
 <p align="center">
-  MCP-сервер для Google Gemini — генерация и редактирование изображений, чат и анализ файлов через браузерные cookies.<br>
-  Без API-ключей. Бесплатно.
+  MCP server for Google Gemini — image generation and editing, chat, and file analysis through browser sessions.<br>
+  No API key required. Uses the Gemini Web experience.
 </p>
 
 <p align="center">
@@ -20,286 +20,6 @@
 
 ---
 
-## Возможности
-
-- **Генерация изображений** по текстовому описанию (Nano Banana 2 с поддержкой пропорций)
-- **2x разрешение** — автоматически скачивает upscaled-версию (2048x2048 → 2816x1536 и выше)
-- **Редактирование изображений** — отправьте картинку + промпт и получите изменённую версию
-- **Анализ файлов** — видео, изображения, PDF, документы
-- **Текстовый чат** с Gemini (Flash, Pro, Flash-Thinking)
-- **Авто-удаление вотермарки** — sparkle-метка Gemini убирается встроенным детерминированным Reverse Alpha Blending (без внешних бинарников, ML-моделей и скачиваний)
-- **Авто-аутентификация** через cookies из Chrome
-
-## Быстрый старт
-
-> This fork is based on the verified upstream `AndyShaman/gemini-webapi-mcp`
-> repository at commit `69d2f5220ad25c9dbe8146d9300283d5dfafb174`. The upstream
-> license is AGPL-3.0-or-later.
-
-### Transports and model discovery
-
-The default stdio transport remains compatible with local Codex and other MCP
-clients. For a tunnel or reverse proxy, run:
-
-```bash
-uv run gemini-webapi-mcp --transport streamable-http --host 127.0.0.1 --port 8000
-```
-
-The `gemini_list_models` tool reports model identifiers observed from the web
-client and capability metadata. If the upstream client does not expose a model
-list, it returns clearly marked fallback identifiers. See
-[`docs/gateway.md`](docs/gateway.md) for HTTPS, OAuth, secret handling, and the
-video-generation capability boundary.
-
-### 1. Войдите в Gemini
-
-Откройте Chrome, перейдите на [gemini.google.com](https://gemini.google.com) и войдите в свой Google-аккаунт.
-
-### 2. Установите MCP-сервер
-
-**Из GitHub (без клонирования):**
-
-```bash
-uv run --with "gemini-webapi-mcp @ git+https://github.com/AndyShaman/gemini-webapi-mcp.git" gemini-webapi-mcp
-```
-
-**Локальная установка:**
-
-```bash
-git clone https://github.com/AndyShaman/gemini-webapi-mcp.git
-cd gemini-webapi-mcp
-uv sync
-uv run gemini-webapi-mcp
-```
-
-### 3. Добавьте MCP-конфиг
-
-<details>
-<summary><b>Claude Code</b></summary>
-
-```bash
-claude mcp add-json gemini '{"command":"uv","args":["run","--with","gemini-webapi-mcp @ git+https://github.com/AndyShaman/gemini-webapi-mcp.git","gemini-webapi-mcp"]}'
-```
-
-Или добавьте вручную в `.mcp.json` в корне проекта:
-
-```json
-{
-  "mcpServers": {
-    "gemini": {
-      "command": "uv",
-      "args": ["run", "--with", "gemini-webapi-mcp @ git+https://github.com/AndyShaman/gemini-webapi-mcp.git", "gemini-webapi-mcp"]
-    }
-  }
-}
-```
-
-</details>
-
-<details>
-<summary><b>Claude Desktop</b></summary>
-
-Добавьте в конфиг Claude Desktop:
-- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
-- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
-
-```json
-{
-  "mcpServers": {
-    "gemini": {
-      "command": "uv",
-      "args": ["run", "--with", "gemini-webapi-mcp @ git+https://github.com/AndyShaman/gemini-webapi-mcp.git", "gemini-webapi-mcp"]
-    }
-  }
-}
-```
-
-</details>
-
-<details>
-<summary><b>Другие MCP-клиенты</b></summary>
-
-Используйте стандартный MCP stdio-конфиг:
-
-```json
-{
-  "mcpServers": {
-    "gemini": {
-      "command": "uv",
-      "args": ["run", "--with", "gemini-webapi-mcp @ git+https://github.com/AndyShaman/gemini-webapi-mcp.git", "gemini-webapi-mcp"]
-    }
-  }
-}
-```
-
-Путь к файлу конфига зависит от вашего MCP-клиента.
-
-</details>
-**Локальная установка (после клонирования)** — замените args на:
-
-```json
-"args": ["--directory", "/path/to/gemini-webapi-mcp", "run", "gemini-webapi-mcp"]
-```
-
-### 4. Установите скилл для Claude Code (опционально)
-
-Папка [`skill/`](skill/) содержит скилл для Claude Code — подсказки по промптингу, документацию по тулам и гайд по генерации изображений. Скилл автоматически активируется при работе с Gemini.
-
-```bash
-cp -r skill ~/.claude/skills/gemini-mcp
-```
-
-### 5. Проверьте
-
-Запустите сервер вручную — если инициализация прошла без ошибок, всё работает:
-
-```bash
-uv run --with "gemini-webapi-mcp @ git+https://github.com/AndyShaman/gemini-webapi-mcp.git" gemini-webapi-mcp
-```
-
-После этого откройте Claude Code или Claude Desktop и попробуйте: *«Сгенерируй картинку кота в акварельном стиле через Gemini»*.
-
-## Аутентификация
-
-Сервер автоматически читает cookies из Chrome через `browser-cookie3`.
-
-> **Несколько Google-аккаунтов?** Установите `GEMINI_ACCOUNT_INDEX` — номер аккаунта из Chrome (0 = первый, 1 = второй, ...). Посмотрите порядок: кликните на аватарку в gemini.google.com.
-
-> **Gemini отвечает «Are you signed in?» или ошибкой 1096, хотя в Chrome вы залогинены?** Сервер берёт cookies только с домена `.google.com` (версия от 2026-09-21); если у вас старая версия, а в Chrome есть cookies национальных доменов Google (`.google.com.bd`, `.google.co.uk` …), обновите сервер.
-
-Если автоопределение cookies не работает, задайте их вручную:
-
-1. Откройте Chrome DevTools на gemini.google.com → Application → Cookies
-2. Скопируйте значения `__Secure-1PSID` и `__Secure-1PSIDTS`
-3. Добавьте в MCP-конфиг:
-
-```json
-{
-  "mcpServers": {
-    "gemini": {
-      "command": "uv",
-      "args": ["run", "--with", "gemini-webapi-mcp @ git+https://github.com/AndyShaman/gemini-webapi-mcp.git", "gemini-webapi-mcp"],
-      "env": {
-        "GEMINI_PSID": "your__Secure-1PSID_value",
-        "GEMINI_PSIDTS": "your__Secure-1PSIDTS_value"
-      }
-    }
-  }
-}
-```
-
-## Переменные окружения
-
-| Переменная | Описание | По умолчанию |
-|------------|----------|--------------|
-| `GEMINI_PSID` | Значение cookie `__Secure-1PSID` | авто из Chrome |
-| `GEMINI_PSIDTS` | Значение cookie `__Secure-1PSIDTS` | авто из Chrome |
-| `GEMINI_LANGUAGE` | Язык ответов Gemini (`ru`, `en`, `ja`, ...) | `en` |
-| `GEMINI_ACCOUNT_INDEX` | Индекс Google-аккаунта (0, 1, 2, ...) | `0` |
-
-## Высокое разрешение (2x)
-
-Сервер автоматически запрашивает у Google увеличенную версию сгенерированного изображения — тот же механизм, что использует кнопка "Download" в веб-интерфейсе Gemini. Google выполняет server-side upscale, и вы получаете изображение в 2x разрешении:
-
-| Модель | Нативное | 2x (скачивается) |
-|--------|----------|------------------|
-| Flash-Thinking (16:9) | 1408x768 | 2816x1536 |
-| Flash-Thinking (9:16) | 768x1376 | 1536x2752 |
-| Flash-Thinking (1:1) | 1024x1024 | 2048x2048 |
-
-Если 2x-версия недоступна (таймаут, ошибка сети), сервер автоматически использует нативное разрешение.
-
-## Удаление вотермарки
-
-Gemini добавляет sparkle-метку (четырёхконечную звёздочку) в правый нижний угол сгенерированных изображений. Сервер убирает её встроенным reverse-alpha-вычитанием — `original = (L − A·shape·255) / (1 − A·shape)` — без внешних бинарников, ML-моделей и скачиваний.
-
-Метка всегда стоит в одном из двух фиксированных угловых якорей — на отступе **96 px** или **32 px** от правого нижнего угла (абсолютные отступы, не зависят от разрешения; логотип 48 px, ×2 при 2x-upscale). Сервер не детектирует метку по порогу корреляции — это ненадёжно на ярком фоне, где слабая полупрозрачная звёздочка почти не контрастирует. Вместо этого он детерминированно обрабатывает **оба якоря**:
-
-1. **per-image прозрачность** — сила метки оценивается из самого кадра (`L = bg + A·shape·(255−bg)`, least-squares); на пустом якоре `A ≈ 0`, поэтому вычитание становится no-op;
-2. **reverse-alpha** в позиции якоря;
-3. **self-check по |corr|** — вычитание принимается, только если оно *уменьшает* корреляцию с формой звезды; иначе откатывается. Навредить пустому, текстурному или цветному-контентному якорю невозможно.
-
-Подход не содержит ни одной захардкоженной «под разрешение» величины, поэтому работает на любом нативном разрешении и соотношении сторон — на светлом, тёмном и цветном фоне.
-
-Единственный калиброванный инвариант — форма звезды в `src/gemini_webapi_mcp/assets/wm_alpha_edit.npy`. Чтобы временно отключить удаление (получить «сырой» водяной знак), задайте `GEMINI_WM_KEEP=1`.
-
-## Инструменты
-
-| Инструмент | Описание |
-|------------|----------|
-| `gemini_generate_image` | Генерация новых или редактирование существующих изображений |
-| `gemini_upload_file` | Анализ файлов — видео, изображения, PDF, документы |
-| `gemini_analyze_url` | Анализ URL — YouTube-видео, веб-страницы, статьи |
-| `gemini_chat` | Текстовый чат (одиночный или multi-turn) |
-| `gemini_start_chat` | Начать multi-turn сессию |
-| `gemini_reset` | Переинициализация клиента при ошибках авторизации |
-
-## Модели
-
-| Модель | По умолчанию для | Примечание |
-|--------|------------------|------------|
-| `gemini-3.0-flash` | чат, анализ файлов | Быстрая |
-| `gemini-3.0-flash-thinking` | генерация изображений | Nano Banana 2, поддержка пропорций |
-| `gemini-3.0-pro` | — | Альтернативная модель |
-
-## Примеры использования
-
-После настройки MCP-конфига Claude сам вызывает нужные инструменты. Просто попросите в чате:
-
-| Задача | Что написать Claude |
-|--------|---------------------|
-| Сгенерировать изображение | *«Сгенерируй через Gemini кота в акварельном стиле»* |
-| Отредактировать изображение | *«Отредактируй через Gemini /path/to/cat.png — сделай кота серым»* |
-| Итеративная правка | *«Теперь сделай фон темнее»* (в том же разговоре) |
-| Проанализировать видео | *«Проанализируй через Gemini это видео: https://youtube.com/watch?v=...»* |
-| Проанализировать файл | *«Загрузи в Gemini /path/to/doc.pdf и сделай краткое резюме»* |
-
-Инструменты, которые Claude вызовет:
-
-```
-gemini_generate_image(prompt="кот в акварельном стиле")
-gemini_generate_image(prompt="сделай кота серым", files=["/path/to/cat.png"])
-gemini_generate_image(prompt="сделай фон темнее", conversation_id=["c_abc", "r_123", "rc_456"])
-gemini_analyze_url(url="https://youtube.com/watch?v=...", prompt="О чём это видео?")
-gemini_upload_file(file_path="/path/to/doc.pdf", prompt="Сделай краткое резюме")
-```
-
-## Благодарности
-
-Этот проект построен на основе библиотеки [gemini-webapi](https://github.com/HanaokaYuzu/Gemini-API) от [@HanaokaYuzu](https://github.com/HanaokaYuzu) (форк [@xob0t](https://github.com/xob0t/Gemini-API) с поддержкой curl_cffi) — реверс-инжиниринговой асинхронной Python-обёртки для веб-приложения Google Gemini. Лицензия: AGPL-3.0.
-
-Алгоритм удаления вотермарки (Reverse Alpha Blending) изначально вдохновлён проектами [`gwt-mini`](https://github.com/allenk/GeminiWatermarkTool) от [@allenk](https://github.com/allenk) (Allen Kuo, MIT License) и [gemini-watermark-remover](https://github.com/GargantuaX/gemini-watermark-remover) от [@GargantuaX](https://github.com/GargantuaX) (MIT License). В текущей версии сервер использует собственную встроенную реализацию и откалиброванные alpha-карты — внешние бинарники не требуются.
-
-## Лицензия
-
-[AGPL-3.0](LICENSE) — свободно используйте, модифицируйте и распространяйте при условии сохранения открытости исходного кода.
-
-**[@AndyShaman](https://github.com/AndyShaman)** · [gemini-webapi-mcp](https://github.com/AndyShaman/gemini-webapi-mcp)
-
----
-
-<h1 align="center">gemini-webapi-mcp</h1>
-
-<p align="center">
-  MCP server for Google Gemini — image generation/editing, chat and file analysis via browser cookies.<br>
-  No API keys. Free.
-</p>
-
-<p align="center">
-  <a href="https://github.com/AndyShaman/gemini-webapi-mcp/blob/main/LICENSE"><img src="https://img.shields.io/github/license/AndyShaman/gemini-webapi-mcp?style=flat-square&color=green" alt="License"></a>
-  <img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square&logo=python&logoColor=white" alt="Python">
-  <img src="https://img.shields.io/badge/MCP-compatible-8A2BE2?style=flat-square" alt="MCP">
-  <a href="https://github.com/AndyShaman/gemini-webapi-mcp/stargazers"><img src="https://img.shields.io/github/stars/AndyShaman/gemini-webapi-mcp?style=flat-square&color=yellow" alt="Stars"></a>
-</p>
-
-<p align="center">
-  <a href="https://t.me/AI_Handler"><img src="https://img.shields.io/badge/Telegram-Author's_Channel-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram"></a>
-  &nbsp;
-  <a href="https://www.youtube.com/channel/UCLkP6wuW_P2hnagdaZMBtCw"><img src="https://img.shields.io/badge/YouTube-Author's_Channel-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="YouTube"></a>
-</p>
-
----
-
 ## Features
 
 - **Image generation** from text descriptions (Nano Banana 2 with aspect ratio support)
@@ -311,6 +31,19 @@ gemini_upload_file(file_path="/path/to/doc.pdf", prompt="Сделай кратк
 - **Auto-authentication** via Chrome browser cookies
 
 ## Quick Start
+
+This fork is based on the verified upstream `AndyShaman/gemini-webapi-mcp`
+repository at commit `69d2f5220ad25c9dbe8146d9300283d5dfafb174` and is licensed
+under AGPL-3.0-or-later.
+
+The server supports STDIO for local clients and Streamable HTTP for an
+authenticated gateway. Model discovery is available through
+`gemini_list_models`; unavailable discovery data is reported with explicit
+fallback metadata.
+
+See [`docs/gateway.md`](docs/gateway.md) for HTTPS gateway deployment, OAuth
+boundaries, persistent Chromium sessions, multi-account isolation, scopes, and
+rate limits.
 
 ### 1. Log into Gemini
 
@@ -536,3 +269,4 @@ The watermark-removal algorithm (Reverse Alpha Blending) was originally inspired
 [AGPL-3.0](LICENSE) — free to use, modify, and distribute, provided the source code remains open.
 
 **[@AndyShaman](https://github.com/AndyShaman)** · [gemini-webapi-mcp](https://github.com/AndyShaman/gemini-webapi-mcp)
+
