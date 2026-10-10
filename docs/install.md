@@ -169,7 +169,8 @@ services:
       - gemini-state:/var/lib/gemini-mcp
       - ./registry.key:/run/secrets/gemini_registry_key:ro
     environment:
-      GEMINI_REGISTRY_PATH: /var/lib/gemini-mcp/registry.json.enc`n      GEMINI_REGISTRY_KEY_FILE: /run/secrets/gemini_registry_key
+      GEMINI_REGISTRY_PATH: /var/lib/gemini-mcp/registry.json.enc
+      GEMINI_REGISTRY_KEY_FILE: /run/secrets/gemini_registry_key
       GEMINI_PROFILE_ROOT: /var/lib/gemini-mcp/accounts
     security_opt:
       - no-new-privileges:true
