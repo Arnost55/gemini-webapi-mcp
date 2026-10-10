@@ -19,6 +19,19 @@ class _ChatGPTContentTypeCompat:
             and scope.get("path") == mcp.settings.streamable_http_path
         ):
             headers = list(scope.get("headers", []))
+            header_names = {name.lower() for name, _ in headers}
+            if b"accept" in header_names:
+                for index, (name, value) in enumerate(headers):
+                    if name.lower() == b"accept":
+                        accepted = value.decode("latin-1")
+                        if "application/json" not in accepted:
+                            accepted += ", application/json"
+                        if "text/event-stream" not in accepted:
+                            accepted += ", text/event-stream"
+                        headers[index] = (name, accepted.encode("latin-1"))
+                        break
+            else:
+                headers.append((b"accept", b"application/json, text/event-stream"))
             for index, (name, value) in enumerate(headers):
                 if name.lower() == b"content-type" and value.lower().split(b";", 1)[0].strip() == b"application/octet-stream":
                     headers[index] = (name, b"application/json")
