@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 from dataclasses import dataclass
 from threading import RLock
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit, urlunsplit, parse_qsl
 
 
 def _b64(data: bytes) -> str:
@@ -163,6 +163,11 @@ class LocalOAuth:
         code = self.begin(client_id, redirect_uri, challenge, subject="local-user")
         finish = self.issuer + "/oauth/complete?code=" + code + "&state=" + state
         browser_url = os.environ.get("GEMINI_NOVNC_PUBLIC_URL", "")
+        if browser_url:
+            parts = urlsplit(browser_url)
+            query = dict(parse_qsl(parts.query, keep_blank_values=True))
+            query["sid"] = code
+            browser_url = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
         browser_link = (
             "<a class='button secondary' target='_blank' rel='noopener' href='" + html.escape(browser_url, quote=True) + "'>Open Chromium login</a>"
             if browser_url else

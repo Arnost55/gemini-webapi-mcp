@@ -171,11 +171,18 @@ encrypted account registry, and Chromium profiles. Reusing that volume keeps
 the existing ChatGPT MCP connection registered; changing or deleting it
 requires a new dynamic registration.
 
-The container starts one Chromium owner for the shared `default` profile. A
-second connector reuses that session instead of starting a competing browser.
-For simultaneous Google accounts, assign separate profile directories under
+Each OAuth authorization now gets a private, unguessable `sid` in its noVNC
+login URL. The sid is tied to that authorization request and expires with its
+five-minute handoff code, so copying a generic `/vnc.html` URL cannot attach a
+login to another authorization. Keep noVNC behind HTTPS and access control;
+the sid is an additional binding, not a replacement for authentication.
+
+The container still starts one Chromium owner for the shared `default` profile.
+For simultaneous Google accounts, use separate profile directories under
 `GEMINI_PROFILE_ROOT` and map callers to those accounts through the encrypted
-registry. Do not point two accounts at the same Chromium profile.
+registry. Do not point two accounts at the same Chromium profile. A future
+multi-display deployment can run one browser/display per handoff sid; a single
+noVNC display cannot safely show multiple users' browsers at the same time.
 
 ### Compose with the published image
 

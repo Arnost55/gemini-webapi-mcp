@@ -48,3 +48,12 @@ def test_registration_and_tokens_survive_process_restart(tmp_path: Path):
     restarted = LocalOAuth("https://gemini.example", state_path=str(state_path))
     assert client["client_id"] in restarted._clients
     assert restarted.subject_for(token["access_token"]) == "gemini-account-a"
+
+
+def test_browser_handoff_link_is_bound_to_expiring_authorization_code(monkeypatch):
+    monkeypatch.setenv("GEMINI_NOVNC_PUBLIC_URL", "https://novnc.example/vnc.html")
+    oauth = LocalOAuth("https://gemini.example")
+    client = oauth.register({"client_name": "ChatGPT", "redirect_uris": ["https://chat.openai.com/cb"]})
+    page = oauth.authorize_page(client["client_id"], client["redirect_uris"][0], "challenge", "state")
+    assert "sid=" in page
+    assert "https://novnc.example/vnc.html?sid=" in page
