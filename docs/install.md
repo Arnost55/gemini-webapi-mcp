@@ -61,7 +61,7 @@ OAuth. Google login remains inside the selected Chromium profile.
 Configure the public origin in the gateway environment:
 
 ```bash
-GEMINI_PUBLIC_URL=https://gemini-mcp.example.com
+GEMINI_PUBLIC_URL=https://gemini.proxmoxserver.dev
 ```
 
 This is the URL used for OAuth callbacks and handoff links. The MCP container

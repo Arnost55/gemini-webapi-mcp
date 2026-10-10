@@ -39,6 +39,7 @@
 - **Secure browser handoff state** for one-time login URLs, explicit approval, expiry, and replay protection
 - **Encrypted dynamic account registry** using AES-256-GCM; Base64 is only an encoding envelope
 - **Account lifecycle controls** for ready, disabled, and revoked profiles
+- **Authentik gateway deployment path** for OAuth/OIDC identity and PKCE
 
 ## Quick Start
 

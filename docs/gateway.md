@@ -18,7 +18,7 @@ request bodies, `Mcp-Method`, `Mcp-Name`, and authorization headers.
 Set the gateway's external origin explicitly:
 
 ```env
-GEMINI_PUBLIC_URL=https://gemini-mcp.example.com
+GEMINI_PUBLIC_URL=https://gemini.proxmoxserver.dev
 ```
 
 It must be the HTTPS origin users see. The gateway uses it for OAuth callback,
