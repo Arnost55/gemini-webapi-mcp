@@ -12,5 +12,11 @@ def main():
     parser.add_argument("--host", default=None)
     parser.add_argument("--port", type=int, default=None)
     args = parser.parse_args()
-    kwargs = {key: value for key, value in {"host": args.host, "port": args.port}.items() if value is not None}
-    mcp.run(transport=args.transport, **kwargs)
+    # FastMCP.run() accepts the transport only in the installed MCP SDK.
+    # Host and port are settings on the FastMCP instance, so configure them
+    # before starting the server instead of passing unsupported run kwargs.
+    if args.host is not None:
+        mcp.settings.host = args.host
+    if args.port is not None:
+        mcp.settings.port = args.port
+    mcp.run(transport=args.transport)
