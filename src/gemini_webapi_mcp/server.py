@@ -315,21 +315,42 @@ def _make_gen_id() -> str:
 async def app_lifespan(server):
     from gemini_webapi import GeminiClient
 
-    psid, psidts = _resolve_cookies()
-
-    account_index = int(os.environ.get("GEMINI_ACCOUNT_INDEX", "0"))
-    client = GeminiClient(secure_1psid=psid, secure_1psidts=psidts or None, account_index=account_index)
-    if account_index:
-        logger.info("Using Google account index: %d", account_index)
-    await client.init(timeout=300, watchdog_timeout=45, auto_close=False, auto_refresh=True)
-    _patch_client(client)
+    # OAuth/discovery and the browser login handoff must be usable before a
+    # Gemini session exists.  Do not kill the MCP transport at startup just
+    # because this container has not received cookies yet.
+    client = None
+    try:
+        psid, psidts = _resolve_cookies()
+        account_index = int(os.environ.get("GEMINI_ACCOUNT_INDEX", "0"))
+        client = GeminiClient(secure_1psid=psid, secure_1psidts=psidts or None, account_index=account_index)
+        if account_index:
+            logger.info("Using Google account index: %d", account_index)
+        await client.init(timeout=300, watchdog_timeout=45, auto_close=False, auto_refresh=True)
+        _patch_client(client)
+    except RuntimeError as exc:
+        logger.info("Starting without a Gemini session: %s", exc)
 
     yield {"gemini_client": client, "chat_sessions": {}}
 
-    await client.close()
+    if client is not None:
+        await client.close()
 
 
 mcp = FastMCP("gemini-webapi-mcp", lifespan=app_lifespan)
+
+# The public reverse-proxy origin is expected to be configured explicitly.
+# Keep localhost entries for local development and add the configured host so
+# the SDK's DNS-rebinding protection does not reject the public MCP URL.
+_public_url = os.environ.get("GEMINI_PUBLIC_URL", "").rstrip("/")
+if _public_url:
+    from urllib.parse import urlparse
+    _public_origin = urlparse(_public_url)
+    _public_host = _public_origin.hostname
+    if _public_host:
+        _public_port = _public_origin.port or (443 if _public_origin.scheme == "https" else 80)
+        mcp.settings.transport_security.allowed_hosts.append(_public_host)
+        mcp.settings.transport_security.allowed_hosts.append(f"{_public_host}:{_public_port}")
+        mcp.settings.transport_security.allowed_origins.append(_public_url)
 
 # Local OAuth is intentionally independent from Google authentication.  It
 # authenticates the MCP client; the browser handoff links a Gemini account.
@@ -340,6 +361,13 @@ _oauth = LocalOAuth(os.environ.get("GEMINI_PUBLIC_URL", "http://localhost:8000")
 async def oauth_resource_metadata(request: Request):
     issuer = _oauth.issuer
     return JSONResponse({"resource": issuer + "/mcp", "authorization_servers": [issuer], "scopes_supported": ["openid", "profile"]})
+
+
+@mcp.custom_route("/.well-known/oauth-protected-resource/mcp", methods=["GET"])
+@mcp.custom_route("/mcp/.well-known/oauth-protected-resource", methods=["GET"])
+async def oauth_resource_metadata_alias(request: Request):
+    """Compatibility aliases used by MCP clients during discovery."""
+    return await oauth_resource_metadata(request)
 
 
 @mcp.custom_route("/.well-known/oauth-authorization-server", methods=["GET"])
@@ -356,6 +384,12 @@ async def oauth_server_metadata(request: Request):
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none", "client_secret_post", "client_secret_basic"],
     })
+
+
+@mcp.custom_route("/.well-known/openid-configuration", methods=["GET"])
+async def openid_configuration(request: Request):
+    """OIDC-style discovery alias used by clients that probe OpenID first."""
+    return await oauth_server_metadata(request)
 
 
 @mcp.custom_route("/oauth/register", methods=["POST"])
@@ -453,7 +487,13 @@ async def gemini_list_models(ctx: Context) -> dict:
 # ---------------------------------------------------------------------------
 
 def _get_client(ctx: Context):
-    return ctx.request_context.lifespan_context["gemini_client"]
+    client = ctx.request_context.lifespan_context["gemini_client"]
+    if client is None:
+        raise RuntimeError(
+            "No Gemini account is connected. Complete the browser login handoff, "
+            "then retry this tool."
+        )
+    return client
 
 
 def _get_sessions(ctx: Context) -> dict:
