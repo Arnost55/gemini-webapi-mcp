@@ -4,6 +4,7 @@ import pytest
 
 from gemini_webapi_mcp.session import AccountMapping, GeminiSessionManager, SessionStatus, classify_gemini_page
 from gemini_webapi_mcp.accounts import AccountRegistry
+from gemini_webapi_mcp.handoff import HandoffManager
 
 
 def test_classifies_gemini_page_as_ready():
@@ -56,3 +57,24 @@ def test_registry_status_redacts_unexpected_error(tmp_path):
     registry = AccountRegistry(config)
     registry.write_status("work", "error", "secret-cookie-value")
     assert "secret-cookie-value" not in registry.status_path.read_text(encoding="utf-8")
+
+
+def test_browser_handoff_requires_verify_then_approval():
+    manager = HandoffManager(ttl_seconds=60)
+    token = manager.create("user", "work", now=100)
+    with pytest.raises(PermissionError):
+        manager.approve(token, now=101)
+    manager.mark_verified(token, now=102)
+    session = manager.approve(token, now=103)
+    assert session.subject == "user"
+    assert session.account == "work"
+    assert manager.consume(token, now=104).state == "used"
+    with pytest.raises(PermissionError):
+        manager.consume(token, now=105)
+
+
+def test_browser_handoff_expires_and_cannot_be_replayed():
+    manager = HandoffManager(ttl_seconds=2)
+    token = manager.create("user", "work", now=100)
+    with pytest.raises(PermissionError):
+        manager.inspect(token, now=102)

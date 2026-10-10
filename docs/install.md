@@ -58,6 +58,26 @@ PKCE, enforce scopes, resolve the OAuth subject to an account, and reject
 unmapped or ambiguous selections. The MCP server does not implement Google
 OAuth. Google login remains inside the selected Chromium profile.
 
+### Browser handoff login
+
+For a GUI-free local client, the gateway can expose a short-lived handoff URL:
+
+```text
+Connect Gemini account: work
+[Open Google login]
+
+Gemini session verified
+[Allow this account]
+```
+
+The gateway creates a one-time handoff bound to the validated OAuth subject and
+selected account. The URL opens the isolated remote Chromium session, where the
+user completes Google login. After the session manager reports `ready`, the
+user explicitly approves the connection. The gateway then consumes the token
+and expires it. Handoffs must expire after a short period, reject replay, and
+never contain cookies or credentials. This is a browser handoff, not a claim
+that Google OAuth for Gemini Web is available.
+
 ## Account policy
 
 Keep the policy outside Git, for example at
