@@ -15,4 +15,11 @@ x11vnc -display "$DISPLAY" -localhost -forever -shared -nopw -rfbport "${GEMINI_
 # keep the raw VNC target private inside the container.
 websockify --web=/usr/share/novnc/ "0.0.0.0:${GEMINI_NOVNC_PORT:-6080}" "127.0.0.1:${GEMINI_VNC_PORT:-5900}" >/tmp/novnc.log 2>&1 &
 
+# Put the persistent Gemini Chromium profile on the virtual display so the
+# login handoff has an actual browser window to show through noVNC.
+mkdir -p "${GEMINI_PROFILE_ROOT:-/var/lib/gemini-mcp/accounts}/default"
+uv run gemini-web-session \
+  --profile-dir "${GEMINI_PROFILE_ROOT:-/var/lib/gemini-mcp/accounts}/default" \
+  --headed >/tmp/gemini-browser.log 2>&1 &
+
 exec uv run gemini-webapi-mcp --transport streamable-http --host 0.0.0.0 --port 8000
