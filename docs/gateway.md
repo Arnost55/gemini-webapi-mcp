@@ -15,6 +15,16 @@ trusted MCP tunnel. Do not bind it to `0.0.0.0` directly on the public network.
 The MCP SDK handles the Streamable HTTP protocol; the gateway must preserve
 request bodies, `Mcp-Method`, `Mcp-Name`, and authorization headers.
 
+Set the gateway's external origin explicitly:
+
+```env
+GEMINI_PUBLIC_URL=https://gemini-mcp.example.com
+```
+
+It must be the HTTPS origin users see. The gateway uses it for OAuth callback,
+metadata, and browser-handoff URLs; `127.0.0.1` remains only the internal proxy
+target. The value is rejected unless it is an HTTPS origin.
+
 ## Authentication boundary
 
 This project authenticates to Gemini Web with a browser session (`__Secure-1PSID`

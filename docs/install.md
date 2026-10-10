@@ -58,6 +58,16 @@ PKCE, enforce scopes, resolve the OAuth subject to an account, and reject
 unmapped or ambiguous selections. The MCP server does not implement Google
 OAuth. Google login remains inside the selected Chromium profile.
 
+Configure the public origin in the gateway environment:
+
+```bash
+GEMINI_PUBLIC_URL=https://gemini-mcp.example.com
+```
+
+This is the URL used for OAuth callbacks and handoff links. The MCP container
+still listens internally on `127.0.0.1:8000`; the public HTTPS proxy forwards
+that origin to it.
+
 ### Browser handoff login
 
 For a GUI-free local client, the gateway can expose a short-lived handoff URL:
