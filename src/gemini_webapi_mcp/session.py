@@ -73,11 +73,11 @@ def classify_gemini_page(url: str, body_text: str = "") -> SessionState:
 
 
 class GeminiSessionManager:
-    def __init__(self, profile_dir: str | Path, check_interval: float = 300, headless: bool = True,
+    def __init__(self, profile_dir: str | Path, check_interval: float = 300, headless: bool | None = None,
                  login_url: str = "https://gemini.google.com/app") -> None:
         self.profile_dir = Path(profile_dir)
         self.check_interval = check_interval
-        self.headless = headless
+        self.headless = os.environ.get("GEMINI_HEADLESS", "1") != "0" if headless is None else headless
         self.login_url = login_url
         self.status_info = SessionStatus()
         self._playwright = None
@@ -144,7 +144,7 @@ class GeminiSessionManager:
 
 
 async def _main_async(args: argparse.Namespace) -> None:
-    manager = GeminiSessionManager(args.profile_dir, args.interval, not args.headed)
+    manager = GeminiSessionManager(args.profile_dir, args.interval, False if args.headed else None)
     try:
         status = await manager.start()
         print(status.safe_dict(), flush=True)

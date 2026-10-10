@@ -40,6 +40,7 @@
 - **Encrypted dynamic account registry** using AES-256-GCM; Base64 is only an encoding envelope
 - **Account lifecycle controls** for ready, disabled, and revoked profiles
 - **Local OAuth/DCR foundation** for ChatGPT MCP clients with PKCE
+- **Headless Debian browser display** using Xvfb and noVNC for GUI-free login
 
 ## Quick Start
 

@@ -4,6 +4,7 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:8000:8000"
+      - "127.0.0.1:6080:6080"
     volumes:
       - gemini-state:/var/lib/gemini-mcp
     secrets:
@@ -13,6 +14,9 @@ services:
       GEMINI_REGISTRY_KEY_FILE: /run/secrets/gemini_registry_key
       GEMINI_PUBLIC_URL: https://gemini.proxmoxserver.dev
       GEMINI_PROFILE_ROOT: /var/lib/gemini-mcp/accounts
+      DISPLAY: :99
+      GEMINI_NOVNC_PORT: 6080
+      GEMINI_HEADLESS: "0"
     security_opt:
       - no-new-privileges:true
     cap_drop:
