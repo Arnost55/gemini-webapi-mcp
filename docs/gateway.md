@@ -78,6 +78,11 @@ needs login. A status of `error` means the browser check failed; it does not
 include exception text that could contain secrets. The Chromium profile must
 be readable only by the service account.
 
+The gateway can also use the account registry for scopes, maintenance mode,
+per-account request limits, and safe status files. A subject mapped to several
+accounts must select one explicitly. Keep registry and status files outside
+the repository and readable only by the service account.
+
 ## Video generation
 
 The upstream client currently provides video *analysis* through file upload or

@@ -3,6 +3,7 @@ import json
 import pytest
 
 from gemini_webapi_mcp.session import AccountMapping, GeminiSessionManager, SessionStatus, classify_gemini_page
+from gemini_webapi_mcp.accounts import AccountRegistry
 
 
 def test_classifies_gemini_page_as_ready():
@@ -38,3 +39,20 @@ def test_mapping_file_supports_subjects_object(tmp_path):
     config = tmp_path / "accounts.json"
     config.write_text(json.dumps({"subjects": {"user_abc": "personal"}}), encoding="utf-8")
     assert AccountMapping.from_file(config).resolve("user_abc") == "personal"
+
+
+def test_registry_requires_explicit_selection_for_multiple_accounts(tmp_path):
+    config = tmp_path / "accounts.json"
+    config.write_text(json.dumps({"subjects": {"user": ["personal", "work"]}, "accounts": {"personal": {"scopes": ["gemini:use"]}, "work": {"scopes": ["gemini:use"]}}}), encoding="utf-8")
+    registry = AccountRegistry(config)
+    with pytest.raises(PermissionError):
+        registry.select("user")
+    assert registry.allow_request(registry.select("user", "work"), "gemini:use") is True
+
+
+def test_registry_status_redacts_unexpected_error(tmp_path):
+    config = tmp_path / "accounts.json"
+    config.write_text(json.dumps({"accounts": {}}), encoding="utf-8")
+    registry = AccountRegistry(config)
+    registry.write_status("work", "error", "secret-cookie-value")
+    assert "secret-cookie-value" not in registry.status_path.read_text(encoding="utf-8")
