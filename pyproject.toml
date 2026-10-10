@@ -33,6 +33,7 @@ dependencies = [
     "numpy>=1.24",
     "curl-cffi>=0.14.0",
     "pydantic>=2.0",
+    "cryptography>=43.0",
 ]
 
 [dependency-groups]
@@ -44,6 +45,7 @@ browser = ["playwright>=1.50"]
 [project.scripts]
 gemini-webapi-mcp = "gemini_webapi_mcp:main"
 gemini-web-session = "gemini_webapi_mcp.session:main"
+gemini-account-registry = "gemini_webapi_mcp.registry:main"
 
 [project.urls]
 Homepage = "https://github.com/AndyShaman/gemini-webapi-mcp"

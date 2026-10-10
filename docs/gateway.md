@@ -45,7 +45,9 @@ headless and expose only safe status metadata. Cookie values are never printed,
 returned by MCP, or written to logs.
 
 For multiple accounts, map the OAuth subject from the validated access token to
-an account name. Each name must have its own profile directory; an unmapped
+an account name. Dynamic registration stores the account mapping in an AES-256-GCM encrypted registry. Supply its key separately with `GEMINI_REGISTRY_KEY_FILE`. Base64 can wrap the key and ciphertext for JSON, but Base64 is not encryption. The registry stores metadata and profile names only; cookies remain in Chromium.
+
+Each name must have its own profile directory; an unmapped
 subject must be rejected rather than assigned a default account.
 
 ```json

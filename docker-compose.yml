@@ -6,9 +6,11 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - gemini-state:/var/lib/gemini-mcp
-      - ./accounts.json:/etc/gemini-webapi-mcp/accounts.json:ro
+    secrets:
+      - gemini_registry_key
     environment:
-      GEMINI_ACCOUNT_CONFIG: /etc/gemini-webapi-mcp/accounts.json
+      GEMINI_REGISTRY_PATH: /var/lib/gemini-mcp/registry.json.enc
+      GEMINI_REGISTRY_KEY_FILE: /run/secrets/gemini_registry_key
       GEMINI_PROFILE_ROOT: /var/lib/gemini-mcp/accounts
     security_opt:
       - no-new-privileges:true
@@ -16,3 +18,7 @@ services:
       - ALL
 volumes:
   gemini-state:
+
+secrets:
+  gemini_registry_key:
+    file: ./registry.key

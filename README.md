@@ -37,6 +37,8 @@
 - **Isolated multi-account profiles** with explicit OAuth-subject mapping and no cross-account fallback
 - **Per-account scopes, maintenance mode, request limits, and safe status files**
 - **Secure browser handoff state** for one-time login URLs, explicit approval, expiry, and replay protection
+- **Encrypted dynamic account registry** using AES-256-GCM; Base64 is only an encoding envelope
+- **Account lifecycle controls** for ready, disabled, and revoked profiles
 
 ## Quick Start
 

@@ -78,6 +78,16 @@ and expires it. Handoffs must expire after a short period, reject replay, and
 never contain cookies or credentials. This is a browser handoff, not a claim
 that Google OAuth for Gemini Web is available.
 
+## Dynamic encrypted account registry
+
+Dynamic registration is the recommended deployment mode. Generate one key on the Debian guest and keep it out of Git:
+
+```bash
+uv run gemini-account-registry keygen --output ./registry.key
+chmod 600 ./registry.key
+```
+
+The registry uses AES-256-GCM. Base64 is only used to encode the key and encrypted JSON fields; it is not encryption. The encrypted file contains account metadata and profile names, never cookies or credentials. The browser handoff registers an account only after Google login succeeds and the user explicitly approves it. Back up the encrypted registry together with the browser profile volume, and use a different key per environment.
 ## Account policy
 
 Keep the policy outside Git, for example at
@@ -116,7 +126,7 @@ a bootstrapped Google session and is separate from the unit test suite.
 Build and start the included image:
 
 ```bash
-cp accounts.example.json accounts.json
+uv run gemini-account-registry keygen --output ./registry.key
 docker compose build
 docker compose up -d
 docker compose logs -f gemini-mcp
@@ -124,7 +134,7 @@ docker compose logs -f gemini-mcp
 
 The container listens on port 8000, while Compose binds it to loopback.
 Chromium profiles and status data persist in the `gemini-state` volume. Keep
-`accounts.json` outside Git and replace the example OAuth subjects.
+`registry.key` outside Git. Compose mounts it as a secret and stores the encrypted registry in the persistent `gemini-state` volume.
 
 ### Run the published GHCR image
 
@@ -146,7 +156,7 @@ docker run -d \
 
 ### Compose with the published image
 
-Save this as `docker-compose.yml` beside `accounts.json`:
+Save this as `docker-compose.yml` beside `registry.key`:
 
 ```yaml
 services:
@@ -157,9 +167,9 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - gemini-state:/var/lib/gemini-mcp
-      - ./accounts.json:/etc/gemini-webapi-mcp/accounts.json:ro
+      - ./registry.key:/run/secrets/gemini_registry_key:ro
     environment:
-      GEMINI_ACCOUNT_CONFIG: /etc/gemini-webapi-mcp/accounts.json
+      GEMINI_REGISTRY_PATH: /var/lib/gemini-mcp/registry.json.enc`n      GEMINI_REGISTRY_KEY_FILE: /run/secrets/gemini_registry_key
       GEMINI_PROFILE_ROOT: /var/lib/gemini-mcp/accounts
     security_opt:
       - no-new-privileges:true
