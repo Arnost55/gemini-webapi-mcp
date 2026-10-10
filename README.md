@@ -29,6 +29,11 @@
 - **Text chat** with Gemini (Flash, Pro, Flash-Thinking)
 - **Auto watermark removal** — Gemini's sparkle mark is stripped by a built-in deterministic Reverse Alpha Blending pass (no external binaries, ML models, or downloads)
 - **Auto-authentication** via Chrome browser cookies
+- **Dynamic model discovery** through `gemini_list_models`, with capability metadata and explicit fallbacks
+- **STDIO and Streamable HTTP** transports for local clients and authenticated MCP gateways
+- **Persistent Chromium session supervisor** with five-minute checks, reload recovery, and login-required status
+- **Isolated multi-account profiles** with explicit OAuth-subject mapping and no cross-account fallback
+- **Per-account scopes, maintenance mode, request limits, and safe status files**
 
 ## Quick Start
 
@@ -44,6 +49,67 @@ fallback metadata.
 See [`docs/gateway.md`](docs/gateway.md) for HTTPS gateway deployment, OAuth
 boundaries, persistent Chromium sessions, multi-account isolation, scopes, and
 rate limits.
+
+### Multi-account Gemini sessions
+
+Each Google account uses a separate persistent Chromium profile. OAuth
+authentication identifies the caller, while Google login remains inside the
+selected Gemini profile. A caller mapped to multiple accounts must choose one
+explicitly.
+
+Example account policy:
+
+```json
+{
+  "subjects": {
+    "oauth-subject-personal": ["personal"],
+    "oauth-subject-work": ["work"]
+  },
+  "accounts": {
+    "personal": {
+      "scopes": ["gemini:use"],
+      "requests_per_minute": 30
+    },
+    "work": {
+      "scopes": ["gemini:use"],
+      "requests_per_minute": 30
+    }
+  }
+}
+```
+
+The registry rejects unmapped subjects, disabled accounts, missing scopes, and
+ambiguous account selection. It writes only safe account status metadata and
+never stores cookie values in logs or MCP results.
+
+### Persistent browser session
+
+Install the optional browser support and Chromium runtime:
+
+```bash
+uv sync --extra browser
+uv run playwright install chromium
+```
+
+Bootstrap a profile with a visible browser, complete Google login, and exit:
+
+```bash
+uv run gemini-web-session \
+  --profile-dir /var/lib/gemini-mcp/accounts/personal \
+  --headed --once
+```
+
+Then run the supervisor headlessly:
+
+```bash
+uv run gemini-web-session \
+  --profile-dir /var/lib/gemini-mcp/accounts/personal
+```
+
+The supervisor checks every five minutes by default. If Gemini redirects to
+login, it reloads once and records `login_required` if the session is still
+invalid. It does not claim to refresh Google credentials by simply reloading
+the page.
 
 ### 1. Log into Gemini
 
@@ -155,9 +221,17 @@ Then open Claude Code or Claude Desktop and try: *"Generate a watercolor cat ima
 
 ## Authentication
 
-The server reads cookies from Chrome automatically via `browser-cookie3`.
+The legacy local mode reads cookies from Chrome automatically via
+`browser-cookie3`. For reliable multi-account deployments, use the persistent
+Chromium supervisor and one profile directory per Google account as described
+above. Do not share a profile between accounts.
 
-> **Multiple Google accounts?** Set `GEMINI_ACCOUNT_INDEX` — the account number from Chrome (0 = first, 1 = second, ...). Check the order by clicking your avatar on gemini.google.com.
+OAuth for ChatGPT or another MCP client is a separate gateway concern. It
+identifies the caller and authorizes an account mapping; it does not log the
+caller into Google. Put a reviewed OAuth 2.1 gateway in front of the
+Streamable HTTP endpoint and validate the subject and scopes before selecting a
+Gemini profile. This repository does not claim to implement Google OAuth or a
+complete authorization server.
 
 > **Gemini answers "Are you signed in?" or error 1096 while Chrome is logged in?** The server takes cookies from the `.google.com` domain only (since 2026-09-21); on an older version, cookies of Google country domains in Chrome (`.google.com.bd`, `.google.co.uk` …) break auth — update the server.
 
@@ -189,7 +263,7 @@ If cookie auto-detection fails, set them manually:
 | `GEMINI_PSID` | Cookie value `__Secure-1PSID` | auto from Chrome |
 | `GEMINI_PSIDTS` | Cookie value `__Secure-1PSIDTS` | auto from Chrome |
 | `GEMINI_LANGUAGE` | Gemini response language (`ru`, `en`, `ja`, ...) | `en` |
-| `GEMINI_ACCOUNT_INDEX` | Google account index (0, 1, 2, ...) | `0` |
+| `GEMINI_ACCOUNT_INDEX` | Legacy Chrome account index for local cookie mode | `0` |
 
 ## High Resolution (2x)
 
