@@ -44,6 +44,23 @@ Web. A human completes Google login once in headed mode; later checks run
 headless and expose only safe status metadata. Cookie values are never printed,
 returned by MCP, or written to logs.
 
+For multiple accounts, map the OAuth subject from the validated access token to
+an account name. Each name must have its own profile directory; an unmapped
+subject must be rejected rather than assigned a default account.
+
+```json
+{
+  "subjects": {
+    "oauth-subject-personal": "personal",
+    "oauth-subject-work": "work"
+  }
+}
+```
+
+Use separate directories such as `/var/lib/gemini-mcp/accounts/personal` and
+`/var/lib/gemini-mcp/accounts/work`, and run the headed bootstrap once for each
+directory. OAuth identifies the caller; it does not perform Google login.
+
 ```bash
 uv sync --extra browser
 uv run playwright install chromium

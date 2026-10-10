@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -28,6 +29,34 @@ class SessionStatus:
 
     def safe_dict(self) -> dict[str, object]:
         return asdict(self)
+
+
+class AccountMapping:
+    """Allow-list mapping OAuth subjects to isolated Gemini account profiles."""
+
+    def __init__(self, mappings: dict[str, str]) -> None:
+        self._mappings = dict(mappings)
+
+    @classmethod
+    def from_file(cls, path: str | Path) -> "AccountMapping":
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        mappings = data.get("subjects", data)
+        if not isinstance(mappings, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in mappings.items()):
+            raise ValueError("account mapping must be a JSON object of OAuth subjects to account names")
+        return cls(mappings)
+
+    def resolve(self, subject: str) -> str:
+        """Resolve an OAuth subject or fail closed; never choose another account."""
+        try:
+            return self._mappings[subject]
+        except KeyError as exc:
+            raise PermissionError("OAuth subject is not mapped to a Gemini account") from exc
+
+    def profile_for(self, subject: str, accounts_dir: str | Path) -> Path:
+        account = self.resolve(subject)
+        if Path(account).name != account or account in {"", ".", ".."}:
+            raise ValueError("mapped account must be a simple profile name")
+        return Path(accounts_dir) / account
 
 
 def classify_gemini_page(url: str, body_text: str = "") -> SessionState:
