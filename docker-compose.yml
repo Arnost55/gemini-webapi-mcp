@@ -4,7 +4,8 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:8000:8000"
-      - "127.0.0.1:6080:6080"
+      # LAN-only noVNC web display. Keep raw VNC (5900) internal to the container.
+      - "0.0.0.0:6080:6080"
     volumes:
       - gemini-state:/var/lib/gemini-mcp
     secrets:
