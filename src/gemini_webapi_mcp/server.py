@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP, Context
+from .models import capabilities_json
 
 # ---------------------------------------------------------------------------
 # Logging (stderr only — stdout reserved for MCP stdio transport)
@@ -326,6 +327,29 @@ async def app_lifespan(server):
 
 
 mcp = FastMCP("gemini-webapi-mcp", lifespan=app_lifespan)
+
+
+@mcp.tool(
+    name="gemini_list_models",
+    annotations={
+        "title": "List Gemini Web Models",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def gemini_list_models(ctx: Context) -> dict:
+    """List models observed in the current web session and their capabilities.
+
+    A fallback list is returned when the upstream web client has no model
+    enumeration surface. Fallback entries are explicitly marked as such.
+    """
+    try:
+        return {"models": capabilities_json(_get_client(ctx))}
+    except Exception as exc:
+        logger.warning("model discovery unavailable: %s", type(exc).__name__)
+        return {"models": capabilities_json(None), "warning": "discovery_unavailable"}
 
 # ---------------------------------------------------------------------------
 # Helpers

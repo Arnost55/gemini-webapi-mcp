@@ -32,6 +32,25 @@
 
 ## Быстрый старт
 
+> This fork is based on the verified upstream `AndyShaman/gemini-webapi-mcp`
+> repository at commit `69d2f5220ad25c9dbe8146d9300283d5dfafb174`. The upstream
+> license is AGPL-3.0-or-later.
+
+### Transports and model discovery
+
+The default stdio transport remains compatible with local Codex and other MCP
+clients. For a tunnel or reverse proxy, run:
+
+```bash
+uv run gemini-webapi-mcp --transport streamable-http --host 127.0.0.1 --port 8000
+```
+
+The `gemini_list_models` tool reports model identifiers observed from the web
+client and capability metadata. If the upstream client does not expose a model
+list, it returns clearly marked fallback identifiers. See
+[`docs/gateway.md`](docs/gateway.md) for HTTPS, OAuth, secret handling, and the
+video-generation capability boundary.
+
 ### 1. Войдите в Gemini
 
 Откройте Chrome, перейдите на [gemini.google.com](https://gemini.google.com) и войдите в свой Google-аккаунт.
