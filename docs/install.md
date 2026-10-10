@@ -126,6 +126,61 @@ The container listens on port 8000, while Compose binds it to loopback.
 Chromium profiles and status data persist in the `gemini-state` volume. Keep
 `accounts.json` outside Git and replace the example OAuth subjects.
 
+### Run the published GHCR image
+
+```bash
+docker login ghcr.io -u Arnost55
+docker volume create gemini-state
+docker run -d \
+  --name gemini-mcp \
+  --restart unless-stopped \
+  --security-opt no-new-privileges:true \
+  --cap-drop ALL \
+  -p 127.0.0.1:8000:8000 \
+  -v gemini-state:/var/lib/gemini-mcp \
+  -v "$PWD/accounts.json:/etc/gemini-webapi-mcp/accounts.json:ro" \
+  -e GEMINI_ACCOUNT_CONFIG=/etc/gemini-webapi-mcp/accounts.json \
+  -e GEMINI_PROFILE_ROOT=/var/lib/gemini-mcp/accounts \
+  ghcr.io/arnost55/gemini-webapi-mcp:latest
+```
+
+### Compose with the published image
+
+Save this as `docker-compose.yml` beside `accounts.json`:
+
+```yaml
+services:
+  gemini-mcp:
+    image: ghcr.io/arnost55/gemini-webapi-mcp:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - gemini-state:/var/lib/gemini-mcp
+      - ./accounts.json:/etc/gemini-webapi-mcp/accounts.json:ro
+    environment:
+      GEMINI_ACCOUNT_CONFIG: /etc/gemini-webapi-mcp/accounts.json
+      GEMINI_PROFILE_ROOT: /var/lib/gemini-mcp/accounts
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  gemini-state:
+```
+
+Start it with:
+
+```bash
+docker compose up -d
+docker compose logs -f gemini-mcp
+```
+
+If the package is private, authenticate with a GitHub token that has
+`read:packages` before pulling the image. Keep the port bound to `127.0.0.1`
+when an HTTPS gateway or tunnel is handling public access.
+
 ## Public HTTPS URL
 
 The MCP server supports Streamable HTTP, but it does not manufacture a public
