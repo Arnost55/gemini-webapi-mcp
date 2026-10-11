@@ -30,6 +30,8 @@ def test_viewer_is_a_custom_rfb_surface_without_google_iframes():
     assert '"sid":"opaque-capability"' in page
     assert DEFAULT_RFB_URL == "https://cdn.jsdelivr.net/gh/novnc/noVNC@v1.5.0/core/rfb.js"
     assert DEFAULT_RFB_URL in page
+    assert "waiting for Chromium" in page
+    assert "browser_process_exited" in page
 
 
 def test_viewer_csp_allows_only_configured_transport_and_ancestors():

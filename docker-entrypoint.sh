@@ -8,7 +8,15 @@ set -eu
 # login handoff. There is deliberately no shared Chromium desktop.
 handoff_root="${GEMINI_HANDOFF_ROOT:-/var/lib/gemini-mcp/handoffs}"
 mkdir -p "$handoff_root"
-: > "$handoff_root/novnc-tokens"
+touch "$handoff_root/novnc-tokens"
 websockify --web=/usr/share/novnc/ --token-plugin TokenFile --token-source "$handoff_root/novnc-tokens" "0.0.0.0:${GEMINI_NOVNC_PORT:-6080}" >/tmp/novnc.log 2>&1 &
+websockify_pid=$!
+cleanup() {
+  kill "$websockify_pid" 2>/dev/null || true
+  wait "$websockify_pid" 2>/dev/null || true
+}
+trap cleanup INT TERM EXIT
 
-exec uv run gemini-webapi-mcp --transport streamable-http --host 0.0.0.0 --port 8000
+uv run gemini-webapi-mcp --transport streamable-http --host 0.0.0.0 --port 8000
+status=$?
+exit "$status"

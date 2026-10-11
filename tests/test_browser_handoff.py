@@ -9,10 +9,15 @@ class FakeProcess:
     pid = 12345
 
     def poll(self):
-        return 0
+        return None
 
     def terminate(self):
         pass
+
+
+class ExitedProcess(FakeProcess):
+    def poll(self):
+        return 1
 
 
 def test_handoffs_get_separate_profiles_displays_and_vnc_targets(tmp_path: Path):
@@ -68,6 +73,28 @@ def test_handoff_ready_state_never_reads_cookie_values(tmp_path: Path):
     assert broker.is_ready(session.token) is True
     Path(session.status_file).write_text(json.dumps({"state": "login_required"}), encoding="utf-8")
     assert broker.is_ready(session.token) is False
+
+
+def test_handoff_reports_browser_process_failure(tmp_path: Path):
+    broker = BrowserHandoffBroker(tmp_path, runner=lambda *args, **kwargs: ExitedProcess())
+    session = broker.create()
+    Path(session.status_file).write_text(json.dumps({"state": "starting"}), encoding="utf-8")
+
+    state = broker.status(session.token)
+    assert state["state"] == "error"
+    assert state["ready"] is False
+    assert state["error"] == "browser_process_exited"
+    assert state["components"]["xvfb"] == "exited"
+
+
+def test_startup_revokes_previous_viewer_tokens(tmp_path: Path):
+    token_file = tmp_path / "novnc-tokens"
+    token_file.write_text("stale-capability: 127.0.0.1:5901\n", encoding="utf-8")
+
+    broker = BrowserHandoffBroker(tmp_path, runner=lambda *args, **kwargs: FakeProcess())
+    broker.revoke_stale_tokens()
+
+    assert token_file.read_text(encoding="utf-8") == ""
 
 
 def test_handoff_consumption_removes_its_vnc_capability(tmp_path: Path):
