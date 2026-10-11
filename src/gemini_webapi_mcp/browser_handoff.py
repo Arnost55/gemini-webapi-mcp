@@ -57,6 +57,93 @@ class BrowserHandoffBroker:
         self._sessions: dict[str, BrowserHandoff] = {}
         self._lock = RLock()
         self._token_file = self.root / "novnc-tokens"
+        self._manifest_dir = self.root / "manifests"
+        self.recover_orphans()
+
+    def _manifest_path(self, token: str) -> Path:
+        return self._manifest_dir / f"{token}.json"
+
+    def _write_manifest(self, session: BrowserHandoff, pids: list[int] | None = None) -> None:
+        self._manifest_dir.mkdir(parents=True, exist_ok=True)
+        data = {
+            "version": 1,
+            "token": session.token,
+            "profile": session.profile,
+            "status_file": session.status_file,
+            "display": session.display,
+            "vnc_port": session.vnc_port,
+            "expires_at": session.expires_at,
+            "owner_pid": os.getpid(),
+            "pids": pids if pids is not None else [process.pid for process in session.processes if getattr(process, "pid", None)],
+        }
+        temporary = self._manifest_path(session.token).with_suffix(".tmp")
+        temporary.write_text(json.dumps(data, separators=(",", ":")) + "\n", encoding="utf-8")
+        os.replace(temporary, self._manifest_path(session.token))
+
+    @staticmethod
+    def _pid_is_owned(pid: int, token: str, profile: str) -> bool:
+        """Return true only for a process carrying this handoff's marker."""
+        if os.name == "nt":
+            return False
+        try:
+            raw = Path(f"/proc/{pid}/environ").read_bytes()
+            env = raw.split(b"\0")
+            return (
+                f"GEMINI_HANDOFF_TOKEN={token}".encode() in env
+                and f"GEMINI_HANDOFF_PROFILE={profile}".encode() in env
+            )
+        except (OSError, ValueError):
+            return False
+
+    def _recover_manifest(self, manifest_path: Path) -> None:
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            token = str(data["token"])
+            profile = str(data["profile"])
+            status_file = Path(str(data["status_file"]))
+            pids = [int(pid) for pid in data.get("pids", [])]
+        except (OSError, TypeError, ValueError, KeyError):
+            return
+        if not token or not profile or not token in manifest_path.name:
+            return
+        owner_pid = data.get("owner_pid")
+        if owner_pid == os.getpid():
+            return
+        if isinstance(owner_pid, int):
+            try:
+                os.kill(owner_pid, 0)
+            except OSError:
+                pass
+            else:
+                # Another broker may still own this manifest. Leave it alone;
+                # its expiry path will perform normal cleanup.
+                return
+        for pid in pids:
+            if self._pid_is_owned(pid, token, profile):
+                self._terminate_pid(pid)
+        try:
+            shutil.rmtree(profile, ignore_errors=True)
+            status_file.unlink(missing_ok=True)
+            manifest_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def recover_orphans(self) -> None:
+        """Recover abandoned handoffs without killing unrelated processes."""
+        if not self._manifest_dir.exists():
+            return
+        for manifest in self._manifest_dir.glob("*.json"):
+            self._recover_manifest(manifest)
+
+    @staticmethod
+    def _terminate_pid(pid: int) -> None:
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except (OSError, ProcessLookupError):
+                return
 
     def _write_tokens(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -91,7 +178,13 @@ class BrowserHandoffBroker:
             status_file = self.root / "status" / f"{token}.json"
             profile.mkdir(parents=True, exist_ok=False)
             status_file.parent.mkdir(parents=True, exist_ok=True)
-            env = dict(os.environ, DISPLAY=f":{display}", GEMINI_HEADLESS="0")
+            env = dict(
+                os.environ,
+                DISPLAY=f":{display}",
+                GEMINI_HEADLESS="0",
+                GEMINI_HANDOFF_TOKEN=token,
+                GEMINI_HANDOFF_PROFILE=str(profile),
+            )
             # x11vnc must not race Xvfb. Start it through a short wait loop so
             # a slow host cannot expose a handoff URL with a dead VNC target.
             vnc_command = [
@@ -107,15 +200,18 @@ class BrowserHandoffBroker:
                 ["uv", "run", "gemini-web-session", "--profile-dir", str(profile), "--headed", "--status-file", str(status_file)],
             ]
             processes: list[subprocess.Popen] = []
+            session = BrowserHandoff(token, str(profile), display, vnc_port, time.time() + self.ttl_seconds, str(status_file), processes)
+            self._write_manifest(session, [])
             try:
                 for command in commands:
                     processes.append(self._runner(command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))
+                    self._write_manifest(session)
             except Exception:
                 for process in processes:
                     self._terminate(process)
                 shutil.rmtree(profile, ignore_errors=True)
+                self._manifest_path(token).unlink(missing_ok=True)
                 raise
-            session = BrowserHandoff(token, str(profile), display, vnc_port, time.time() + self.ttl_seconds, str(status_file), processes)
             self._sessions[token] = session
             self._write_tokens()
             return session
@@ -159,6 +255,7 @@ class BrowserHandoffBroker:
                     self._terminate(process)
                 Path(session.status_file).unlink(missing_ok=True)
                 shutil.move(session.profile, destination)
+                self._manifest_path(token).unlink(missing_ok=True)
             self._write_tokens()
 
     def expire(self) -> None:
@@ -178,6 +275,15 @@ class BrowserHandoffBroker:
         except OSError:
             pass
         shutil.rmtree(session.profile, ignore_errors=True)
+        self._manifest_path(session.token).unlink(missing_ok=True)
+
+    def shutdown(self) -> None:
+        """Stop all desktops owned by this broker and revoke their tokens."""
+        with self._lock:
+            for session in list(self._sessions.values()):
+                self._dispose(session)
+            self._sessions.clear()
+            self._write_tokens()
 
     @staticmethod
     def _terminate(process: subprocess.Popen) -> None:
