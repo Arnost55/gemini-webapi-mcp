@@ -41,11 +41,13 @@ need an HTTPS authorization server and protected-resource metadata, including:
 - an explicit `resource` value carried through authorization and token exchange
 - access-token validation on every MCP request
 
-The current repository does not pretend to be an authorization server. Put an
-OAuth 2.1 provider or a reviewed MCP gateway in front of the HTTP listener and
-configure its scopes to allow only the tools you intend to expose. This makes
-the ChatGPT integration testable without confusing ChatGPT identity with Google
-account authentication.
+The repository includes a small OAuth 2.1 authorization server for public
+dynamic clients: protected-resource metadata, DCR, PKCE S256, authorization
+codes, refresh-token rotation, and encrypted durable state. It does not
+authenticate against Google. Gemini Web login stays inside the isolated browser
+desktop. Its account-management tools validate issued bearer tokens; deploy a
+gateway that applies that same validation and scope policy to every generative
+MCP tool before exposing the server to other users.
 
 ## Persistent Gemini Web session
 
@@ -108,24 +110,39 @@ browser GUI, it can expose a short-lived handoff page:
 5. Consume the one-time handoff
 ```
 
-The repository provides the state machine in
-`gemini_webapi_mcp.handoff.HandoffManager`:
+The live server creates this lifecycle for each authorization:
 
 ```text
-pending → verified → approved → used
+pending → ready → consumed
 pending → expired
-any active state → revoked
+any active state → revoked on container restart
 ```
 
-The gateway must generate its own HTTPS route, bind the handoff to the
-validated OAuth subject and selected account, and pass the selected profile to
-the session manager. Tokens must be stored hashed, expire quickly, be
-single-use, and never contain cookies or Google credentials. The user must
-approve after the Gemini page is verified as ready.
+Each authorization receives a dedicated Chromium profile, display, loopback
+VNC listener, and opaque noVNC token. The browser capability expires in five
+minutes by default and is removed after completion. Tokens never contain
+cookies or Google credentials. Use a separate HTTPS noVNC origin, for example
+`https://vnc.gemini.proxmoxserver.dev/vnc.html`, and configure the proxy for
+WebSocket upgrades to the container's loopback-bound port 6080.
+
+Treat the noVNC URL as a secret capability: send `Referrer-Policy: no-referrer`
+and omit its query string from proxy access logs. The temporary Chromium
+profile is deleted when its handoff is consumed or expires.
 
 This is a browser handoff, not Google OAuth. A normal OAuth redirect can
 authenticate the MCP caller to the gateway, but it does not transfer Gemini
 Web cookies into a server-side browser profile.
+
+At present, handoff profiles are deliberately terminated after the authorization
+finishes. They prove the account login in an isolated desktop, but they are not
+automatically promoted to a long-lived account profile used by Gemini tools.
+That promotion needs explicit account binding and tool-session routing before
+it can be called multi-account execution support.
+
+Until an upstream identity provider is configured, ownership is separated by
+the dynamic client registration, not by a verified human identity. Do not use
+that local client boundary as a substitute for user authentication in a shared
+or untrusted deployment.
 
 ## Video generation
 

@@ -34,13 +34,13 @@
 - **Docker and Docker Compose** deployment with persistent account volumes
 - **Public URL ready** through an external HTTPS reverse proxy or MCP tunnel
 - **Persistent Chromium session supervisor** with five-minute checks, reload recovery, and login-required status
-- **Isolated multi-account profiles** with explicit OAuth-subject mapping and no cross-account fallback
+- **One isolated Chromium desktop per authorization** with its own profile, X display, VNC target, and expiring noVNC capability URL
 - **Per-account scopes, maintenance mode, request limits, and safe status files**
-- **Secure browser handoff state** for one-time login URLs, explicit approval, expiry, and replay protection
+- **Secure browser handoff state** with five-minute expiry and capability removal after authorization completes
 - **Encrypted dynamic account registry** using AES-256-GCM; Base64 is only an encoding envelope
 - **Account lifecycle controls** for ready, disabled, and revoked profiles
 - **Local OAuth/DCR foundation** for ChatGPT MCP clients with PKCE
-- **Headless Debian browser display** using Xvfb and noVNC for GUI-free login
+- **Debian browser display** using Xvfb and noVNC for GUI-free, per-connection login
 
 ## Quick Start
 
@@ -59,8 +59,8 @@ Streamable HTTP also publishes local OAuth 2.1 metadata and supports dynamic
 client registration at `/oauth/register`. Public clients must use PKCE
 (`S256`); redirect URIs are validated and authorization codes are single-use.
 This authenticates ChatGPT to the MCP server. It is not Google OAuth: Gemini
-accounts are linked separately through the Chromium browser handoff, with one
-isolated profile and encrypted session per account.
+Web login happens separately in a short-lived, isolated Chromium desktop.
+The server does not expose or return browser cookies.
 
 The MCP exposes `gemini_list_accounts` and `gemini_select_account` for the
 connected-account workflow. ChatGPT owns the visual account screen; the MCP
@@ -73,10 +73,14 @@ browser, account, and gateway installation instructions. See
 [`docs/gateway.md`](docs/gateway.md) for OAuth boundaries, persistent sessions,
 multi-account isolation, scopes, and rate limits.
 
-The browser handoff state machine is available in
-`gemini_webapi_mcp.handoff`. It provides the security lifecycle for a gateway
-login page, but this repository does not yet ship a public web UI or claim that
-Google OAuth for Gemini Web is available.
+The browser handoff is served by the built-in OAuth authorization page when
+`GEMINI_NOVNC_PUBLIC_URL` is set. It does not claim Google OAuth support for
+Gemini Web.
+
+The handoff creates an isolated, temporary login desktop. It is intentionally
+destroyed after authorization and is not yet promoted automatically into the
+persistent profile used for Gemini tool execution; that requires explicit
+account binding and routing work.
 
 ### Multi-account Gemini sessions
 

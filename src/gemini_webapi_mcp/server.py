@@ -19,10 +19,12 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from mcp.server.fastmcp import FastMCP, Context
 from .models import capabilities_json
 from .oauth import LocalOAuth
+from .browser_handoff import BrowserHandoffBroker
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 
@@ -352,12 +354,57 @@ if _public_url:
         mcp.settings.transport_security.allowed_hosts.append(f"{_public_host}:{_public_port}")
         mcp.settings.transport_security.allowed_origins.append(_public_url)
 
-# Local OAuth is intentionally independent from Google authentication.  It
-# authenticates the MCP client; the browser handoff links a Gemini account.
+# Local OAuth is intentionally independent from Google authentication. It
+# authenticates the MCP client; a separately isolated browser desktop links a
+# Gemini account. The noVNC token is opaque and is never an OAuth code.
+_handoff_broker = BrowserHandoffBroker(
+    os.environ.get("GEMINI_HANDOFF_ROOT", "/var/lib/gemini-mcp/handoffs"),
+    public_url=os.environ.get("GEMINI_NOVNC_PUBLIC_URL", ""),
+    ttl_seconds=int(os.environ.get("GEMINI_HANDOFF_TTL", "300")),
+)
+
+
+def _new_browser_handoff() -> tuple[str, str]:
+    handoff = _handoff_broker.create()
+    return handoff.token, _handoff_broker.browser_url(handoff)
+
+
 _oauth = LocalOAuth(
     os.environ.get("GEMINI_PUBLIC_URL", "http://localhost:8000"),
     state_path=os.environ.get("GEMINI_OAUTH_STATE_PATH", "/var/lib/gemini-mcp/oauth-state.json"),
+    handoff_url_factory=_new_browser_handoff if os.environ.get("GEMINI_NOVNC_PUBLIC_URL") else None,
+    handoff_ready=_handoff_broker.is_ready,
+    handoff_consume=_handoff_broker.consume,
 )
+
+
+def _configured_registry_key() -> str | None:
+    """Load a registry key from an environment variable or Docker secret file."""
+    direct = os.environ.get("GEMINI_REGISTRY_KEY")
+    if direct:
+        return direct.strip()
+    path = os.environ.get("GEMINI_REGISTRY_KEY_FILE")
+    if not path:
+        return None
+    try:
+        return Path(path).read_text(encoding="ascii").strip()
+    except OSError:
+        logger.warning("Gemini account registry key file is unavailable")
+        return None
+
+
+def _oauth_subject(ctx: Context) -> str:
+    """Resolve the authenticated bearer token without a local-user fallback."""
+    try:
+        request = ctx.request_context.request
+        header = request.headers.get("authorization", "")
+    except AttributeError:
+        header = ""
+    scheme, _, token = header.partition(" ")
+    subject = _oauth.subject_for(token) if scheme.lower() == "bearer" and token else None
+    if not subject:
+        raise PermissionError("an authenticated OAuth bearer token is required")
+    return subject
 
 
 @mcp.custom_route("/.well-known/oauth-protected-resource", methods=["GET"])
@@ -385,7 +432,7 @@ async def oauth_server_metadata(request: Request):
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
-        "token_endpoint_auth_methods_supported": ["none", "client_secret_post", "client_secret_basic"],
+        "token_endpoint_auth_methods_supported": ["none"],
     })
 
 
@@ -417,10 +464,13 @@ async def oauth_authorize(request: Request):
 async def oauth_complete(request: Request):
     """Finish the browser handoff, then redirect with the one-time code."""
     try:
-        target = _oauth.completion_redirect(request.query_params["code"], "local-user")
+        target = _oauth.completion_redirect(request.query_params["code"])
         state = request.query_params.get("state")
         if state:
-            target += ("&" if "?" in target else "?") + "state=" + state
+            parts = urlsplit(target)
+            query = parse_qsl(parts.query, keep_blank_values=True)
+            query.append(("state", state))
+            target = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
         return RedirectResponse(target, status_code=302)
     except (KeyError, ValueError) as exc:
         return PlainTextResponse(str(exc), status_code=400)
@@ -430,9 +480,13 @@ async def oauth_complete(request: Request):
 async def oauth_token(request: Request):
     form = await request.form()
     try:
-        if form.get("grant_type") != "authorization_code":
-            raise ValueError("only authorization_code is supported")
-        result = _oauth.exchange(str(form["code"]), str(form["client_id"]), str(form["redirect_uri"]), str(form["code_verifier"]))
+        grant_type = form.get("grant_type")
+        if grant_type == "authorization_code":
+            result = _oauth.exchange(str(form["code"]), str(form["client_id"]), str(form["redirect_uri"]), str(form["code_verifier"]))
+        elif grant_type == "refresh_token":
+            result = _oauth.refresh(str(form["refresh_token"]))
+        else:
+            raise ValueError("unsupported grant_type")
         return JSONResponse(result)
     except (KeyError, ValueError) as exc:
         return JSONResponse({"error": "invalid_grant", "error_description": str(exc)}, status_code=400)
@@ -443,10 +497,10 @@ async def gemini_list_accounts(ctx: Context) -> dict:
     """List safe metadata for Gemini accounts connected to this MCP identity."""
     from .registry import DynamicAccountRegistry
     path = os.environ.get("GEMINI_REGISTRY_PATH")
-    key = os.environ.get("GEMINI_REGISTRY_KEY")
+    key = _configured_registry_key()
     if not path or not key:
         return {"accounts": [], "warning": "account_registry_not_configured"}
-    subject = _oauth.subject_for("") or "local-user"
+    subject = _oauth_subject(ctx)
     return {"accounts": DynamicAccountRegistry(path, key).list_safe(subject)}
 
 
@@ -455,10 +509,10 @@ async def gemini_select_account(account_id: str, ctx: Context) -> dict:
     """Set the requested account as the explicit account for a future session."""
     from .registry import DynamicAccountRegistry
     path = os.environ.get("GEMINI_REGISTRY_PATH")
-    key = os.environ.get("GEMINI_REGISTRY_KEY")
+    key = _configured_registry_key()
     if not path or not key:
         raise RuntimeError("account registry is not configured")
-    subject = _oauth.subject_for("") or "local-user"
+    subject = _oauth_subject(ctx)
     account = DynamicAccountRegistry(path, key).select(subject, account_id)
     return {"selected": account["account"], "profile": account.get("profile"), "state": account.get("state")}
 
