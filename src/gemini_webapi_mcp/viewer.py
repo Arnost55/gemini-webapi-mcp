@@ -10,7 +10,10 @@ import json
 from urllib.parse import urlsplit
 
 
-DEFAULT_RFB_URL = "https://cdn.jsdelivr.net/npm/@novnc/novnc@1.5.0/core/rfb.js"
+# The npm package publishes its transpiled bundle under ``lib/``.  The
+# browser-native module lives in the official noVNC source tree, which
+# jsDelivr serves from GitHub with its relative core imports intact.
+DEFAULT_RFB_URL = "https://cdn.jsdelivr.net/gh/novnc/noVNC@v1.5.0/core/rfb.js"
 
 
 def _json(value: object) -> str:

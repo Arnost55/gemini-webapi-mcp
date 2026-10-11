@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from gemini_webapi_mcp.browser_handoff import BrowserHandoffBroker
-from gemini_webapi_mcp.viewer import content_security_policy, viewer_page
+from gemini_webapi_mcp.viewer import DEFAULT_RFB_URL, content_security_policy, viewer_page
 
 
 class FakeProcess:
@@ -28,6 +28,8 @@ def test_viewer_is_a_custom_rfb_surface_without_google_iframes():
     assert "cursor:none" in page
     assert "showDotCursor:false" in page
     assert '"sid":"opaque-capability"' in page
+    assert DEFAULT_RFB_URL == "https://cdn.jsdelivr.net/gh/novnc/noVNC@v1.5.0/core/rfb.js"
+    assert DEFAULT_RFB_URL in page
 
 
 def test_viewer_csp_allows_only_configured_transport_and_ancestors():
