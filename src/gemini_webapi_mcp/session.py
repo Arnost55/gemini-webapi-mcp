@@ -93,7 +93,14 @@ class GeminiSessionManager:
         self._playwright = await async_playwright().start()
         self._context = await self._playwright.chromium.launch_persistent_context(
             user_data_dir=str(self.profile_dir), headless=self.headless,
-            args=["--disable-dev-shm-usage"],
+            viewport={"width": 1440, "height": 900},
+            args=[
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--window-size=1440,900",
+            ],
         )
         self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
         return await self.check_now()

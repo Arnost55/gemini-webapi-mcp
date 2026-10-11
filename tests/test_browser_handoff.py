@@ -31,6 +31,7 @@ def test_handoffs_get_separate_profiles_displays_and_vnc_targets(tmp_path: Path)
     assert first.vnc_port != second.vnc_port
     assert first.token != second.token
     assert len(commands) == 8
+    assert any("xdpyinfo" in part for command, _ in commands for part in command)
     url = broker.browser_url(first)
     assert "sid=" + first.token in url
     assert "path=websockify%3Ftoken%3D" in url

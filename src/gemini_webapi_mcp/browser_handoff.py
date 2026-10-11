@@ -193,15 +193,20 @@ class BrowserHandoffBroker:
             # a slow host cannot expose a handoff URL with a dead VNC target.
             vnc_command = [
                 "/bin/sh", "-c",
-                "until test -S /tmp/.X11-unix/X\"$1\"; do sleep 0.1; done; "
-                "exec x11vnc -display \"$2\" -localhost -forever -nopw -rfbport \"$3\"",
-                "handoff-vnc", str(display), f":{display}", str(vnc_port),
+                "until xdpyinfo -display \"$1\" >/dev/null 2>&1; do sleep 0.1; done; "
+                "exec x11vnc -display \"$1\" -localhost -forever -nopw -rfbport \"$2\"",
+                "handoff-vnc", f":{display}", str(vnc_port),
+            ]
+            wait_for_display = [
+                "/bin/sh", "-c",
+                "until xdpyinfo -display \"$1\" >/dev/null 2>&1; do sleep 0.1; done; "
+                "shift; exec \"$@\"",
             ]
             commands = [
                 ["Xvfb", f":{display}", "-screen", "0", os.environ.get("GEMINI_BROWSER_SCREEN", "1440x900x24"), "-nolisten", "tcp"],
-                ["fluxbox"],
+                [*wait_for_display, "handoff-fluxbox", f":{display}", "fluxbox"],
                 vnc_command,
-                ["uv", "run", "gemini-web-session", "--profile-dir", str(profile), "--headed", "--status-file", str(status_file)],
+                [*wait_for_display, "handoff-browser", f":{display}", "uv", "run", "gemini-web-session", "--profile-dir", str(profile), "--headed", "--status-file", str(status_file)],
             ]
             processes: list[subprocess.Popen] = []
             session = BrowserHandoff(token, str(profile), display, vnc_port, time.time() + self.ttl_seconds, str(status_file), processes, owner_subject, account)
