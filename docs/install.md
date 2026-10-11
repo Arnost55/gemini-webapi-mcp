@@ -90,8 +90,9 @@ handoff, not a claim that Google OAuth for Gemini Web is available.
 
 The noVNC link is a short-lived capability. Configure its HTTPS proxy with
 `Referrer-Policy: no-referrer`, do not record query strings in access logs, and
-do not embed that link in another site. The temporary Chromium profile is
-deleted when the handoff completes or expires.
+do not embed that link in another site. The handoff profile is promoted into
+the selected account directory after successful completion; expired or failed
+handoffs are deleted.
 
 Set `GEMINI_OAUTH_STATE_KEY_FILE` to a protected 32-byte key encoded as
 URL-safe Base64. The server uses it to encrypt durable DCR registrations and
@@ -262,12 +263,12 @@ Chromium session supervision, account policy selection, rate limiting, safe
 status persistence, built-in OAuth metadata/DCR/PKCE, encrypted durable OAuth
 state, and browser-handoff token lifecycle management.
 
-The built-in OAuth server currently validates bearer tokens for the connected
-account-management tools. Put a gateway that enforces bearer-token validation,
-scope policy, rate limits, HTTPS, CSRF protection, and audit logging in front
-of every generative MCP tool before offering it to untrusted users. The login
-handoff itself does not yet make the new browser profile the execution profile
-for Gemini tools.
+The built-in OAuth server validates bearer tokens for account management and
+Gemini execution. It binds a successful browser handoff to the OAuth subject,
+promotes the profile into the encrypted registry's account directory, and
+requires explicit selection when a subject owns multiple accounts. Put an
+additional reviewed gateway in front when offering the service to untrusted
+users.
 
 Do not describe the deployment as Google OAuth. The user still signs into
 Gemini Web inside the selected isolated browser profile.

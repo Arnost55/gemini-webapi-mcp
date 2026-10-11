@@ -7,6 +7,7 @@ browser cookies (__Secure-1PSID and __Secure-1PSIDTS).
 """
 
 import asyncio
+from collections import deque
 import json
 import logging
 import os
@@ -14,6 +15,7 @@ import random
 import re
 import string
 import sys
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -310,32 +312,133 @@ def _make_gen_id() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Lifespan: initialise GeminiClient once, reuse across all tool calls
+# Account-scoped client lifecycle
 # ---------------------------------------------------------------------------
+
+class _AccountClientManager:
+    """Create and cache Gemini clients only after account authorization.
+
+    A client is keyed by the authenticated OAuth subject and its persisted
+    account selection.  There is deliberately no process-wide cookie fallback:
+    an HTTP request without an owned, selected account cannot reach Gemini.
+    """
+
+    def __init__(self) -> None:
+        self.clients: dict[tuple[str, str], object] = {}
+        self.sessions: dict[tuple[str, str, str], object] = {}
+        self._rate_windows: dict[tuple[str, str], deque[float]] = {}
+        self._global_rate_window: deque[float] = deque()
+        self._lock = asyncio.Lock()
+
+    def _allow_request(self, subject: str, account: str, requests_per_minute: int) -> None:
+        now = time.monotonic()
+        cutoff = now - 60.0
+        global_limit = int(os.environ.get("GEMINI_GLOBAL_REQUESTS_PER_MINUTE", "0"))
+        while self._global_rate_window and self._global_rate_window[0] <= cutoff:
+            self._global_rate_window.popleft()
+        if global_limit > 0 and len(self._global_rate_window) >= global_limit:
+            raise PermissionError("Gemini server request rate limit exceeded")
+        key = (subject, account)
+        window = self._rate_windows.setdefault(key, deque())
+        while window and window[0] <= cutoff:
+            window.popleft()
+        if len(window) >= requests_per_minute:
+            raise PermissionError("Gemini account request rate limit exceeded")
+        window.append(now)
+        self._global_rate_window.append(now)
+
+    @staticmethod
+    def _profile(record: dict) -> Path:
+        root = Path(os.environ.get("GEMINI_PROFILE_ROOT", "/var/lib/gemini-mcp/accounts")).expanduser().resolve()
+        candidate = Path(str(record.get("profile", ""))).expanduser()
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        candidate = candidate.resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise PermissionError("Gemini account profile is outside GEMINI_PROFILE_ROOT") from exc
+        if not candidate.is_dir():
+            raise RuntimeError("selected Gemini account profile is not available")
+        return candidate
+
+    @staticmethod
+    def _account(ctx: Context) -> tuple[str, dict]:
+        from .registry import DynamicAccountRegistry
+        path = os.environ.get("GEMINI_REGISTRY_PATH")
+        key = _configured_registry_key()
+        if not path or not key:
+            raise RuntimeError("encrypted account registry is not configured")
+        subject = _oauth_subject(ctx)
+        record = DynamicAccountRegistry(path, key).selected(subject)
+        return subject, record
+
+    @staticmethod
+    def _cookies(profile: Path) -> tuple[str, str | None]:
+        try:
+            import browser_cookie3
+            cookies = browser_cookie3.chrome(
+                cookie_file=str(profile / "Default" / "Cookies"),
+                domain_name="gemini.google.com",
+            )
+        except Exception as exc:
+            raise RuntimeError("cannot read cookies for the selected Gemini account") from exc
+        psid = psidts = None
+        for cookie in cookies:
+            if cookie.name == "__Secure-1PSID" and cookie.value:
+                psid = cookie.value
+            elif cookie.name == "__Secure-1PSIDTS" and cookie.value:
+                psidts = cookie.value
+        if not psid:
+            raise RuntimeError("selected Gemini account is not logged in")
+        return psid, psidts
+
+    async def get(self, ctx: Context):
+        from gemini_webapi import GeminiClient
+        subject, record = self._account(ctx)
+        account = str(record["account"])
+        key = (subject, account)
+        async with self._lock:
+            self._allow_request(subject, account, int(record.get("requests_per_minute", 30)))
+            client = self.clients.get(key)
+            if client is not None:
+                return client
+            psid, psidts = self._cookies(self._profile(record))
+            client = GeminiClient(secure_1psid=psid, secure_1psidts=psidts or None)
+            await client.init(timeout=300, watchdog_timeout=45, auto_close=False, auto_refresh=True)
+            _patch_client(client)
+            self.clients[key] = client
+            return client
+
+    def session_key(self, ctx: Context, session_id: str) -> tuple[str, str, str]:
+        subject, record = self._account(ctx)
+        return subject, str(record["account"]), session_id
+
+    def media_dir(self, ctx: Context) -> Path:
+        _, record = self._account(ctx)
+        root = Path(os.environ.get("GEMINI_MEDIA_ROOT", str(IMAGES_DIR))).expanduser().resolve()
+        account_dir = (root / str(record["account"])).resolve()
+        try:
+            account_dir.relative_to(root)
+        except ValueError as exc:
+            raise PermissionError("Gemini account media directory is outside GEMINI_MEDIA_ROOT") from exc
+        account_dir.mkdir(parents=True, exist_ok=True)
+        return account_dir
+
+    async def close(self) -> None:
+        for client in list(self.clients.values()):
+            try:
+                await client.close()
+            except Exception:
+                logger.warning("failed to close account-scoped Gemini client", exc_info=True)
+        self.clients.clear()
+        self.sessions.clear()
 
 @asynccontextmanager
 async def app_lifespan(server):
-    from gemini_webapi import GeminiClient
-
-    # OAuth/discovery and the browser login handoff must be usable before a
-    # Gemini session exists.  Do not kill the MCP transport at startup just
-    # because this container has not received cookies yet.
-    client = None
-    try:
-        psid, psidts = _resolve_cookies()
-        account_index = int(os.environ.get("GEMINI_ACCOUNT_INDEX", "0"))
-        client = GeminiClient(secure_1psid=psid, secure_1psidts=psidts or None, account_index=account_index)
-        if account_index:
-            logger.info("Using Google account index: %d", account_index)
-        await client.init(timeout=300, watchdog_timeout=45, auto_close=False, auto_refresh=True)
-        _patch_client(client)
-    except RuntimeError as exc:
-        logger.info("Starting without a Gemini session: %s", exc)
-
-    yield {"gemini_client": client, "chat_sessions": {}}
-
-    if client is not None:
-        await client.close()
+    manager = _AccountClientManager()
+    yield {"account_clients": manager}
+    await manager.close()
 
 
 mcp = FastMCP("gemini-webapi-mcp", lifespan=app_lifespan)
@@ -369,15 +472,6 @@ def _new_browser_handoff() -> tuple[str, str]:
     return handoff.token, _handoff_broker.browser_url(handoff)
 
 
-_oauth = LocalOAuth(
-    os.environ.get("GEMINI_PUBLIC_URL", "http://localhost:8000"),
-    state_path=os.environ.get("GEMINI_OAUTH_STATE_PATH", "/var/lib/gemini-mcp/oauth-state.json"),
-    handoff_url_factory=_new_browser_handoff if os.environ.get("GEMINI_NOVNC_PUBLIC_URL") else None,
-    handoff_ready=_handoff_broker.is_ready,
-    handoff_consume=_handoff_broker.consume,
-)
-
-
 def _configured_registry_key() -> str | None:
     """Load a registry key from an environment variable or Docker secret file."""
     direct = os.environ.get("GEMINI_REGISTRY_KEY")
@@ -391,6 +485,49 @@ def _configured_registry_key() -> str | None:
     except OSError:
         logger.warning("Gemini account registry key file is unavailable")
         return None
+
+
+def _consume_browser_handoff(token: str, subject: str, account: str) -> None:
+    """Promote one completed browser profile into its owner-bound account."""
+    from .registry import DynamicAccountRegistry
+
+    registry_path = os.environ.get("GEMINI_REGISTRY_PATH")
+    registry_key = _configured_registry_key()
+    if not registry_path or not registry_key:
+        raise RuntimeError("encrypted account registry is not configured")
+    profile_root = Path(os.environ.get("GEMINI_PROFILE_ROOT", "/var/lib/gemini-mcp/accounts")).expanduser().resolve()
+    destination = profile_root / account
+    try:
+        destination.relative_to(profile_root)
+    except ValueError as exc:
+        raise PermissionError("invalid Gemini account profile name") from exc
+    registry = DynamicAccountRegistry(registry_path, registry_key)
+    registry.register(
+        subject=subject,
+        account=account,
+        profile=account,
+        scopes={"chat", "image", "upload", "url"},
+        requests_per_minute=int(os.environ.get("GEMINI_ACCOUNT_RPM", "30")),
+        state="pending",
+    )
+    try:
+        _handoff_broker.consume(token, promote_to=destination)
+        registry.set_state(account, "ready")
+    except Exception:
+        try:
+            registry.set_state(account, "revoked")
+        except Exception:
+            logger.warning("failed to revoke incomplete Gemini account registration", exc_info=True)
+        raise
+
+
+_oauth = LocalOAuth(
+    os.environ.get("GEMINI_PUBLIC_URL", "http://localhost:8000"),
+    state_path=os.environ.get("GEMINI_OAUTH_STATE_PATH", "/var/lib/gemini-mcp/oauth-state.json"),
+    handoff_url_factory=_new_browser_handoff if os.environ.get("GEMINI_NOVNC_PUBLIC_URL") else None,
+    handoff_ready=_handoff_broker.is_ready,
+    handoff_consume=_consume_browser_handoff,
+)
 
 
 def _oauth_subject(ctx: Context) -> str:
@@ -464,13 +601,12 @@ async def oauth_authorize(request: Request):
 async def oauth_complete(request: Request):
     """Finish the browser handoff, then redirect with the one-time code."""
     try:
-        target = _oauth.completion_redirect(request.query_params["code"])
-        state = request.query_params.get("state")
-        if state:
-            parts = urlsplit(target)
-            query = parse_qsl(parts.query, keep_blank_values=True)
-            query.append(("state", state))
-            target = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+        state = request.query_params["state"]
+        target = _oauth.completion_redirect(request.query_params["code"], state)
+        parts = urlsplit(target)
+        query = parse_qsl(parts.query, keep_blank_values=True)
+        query.append(("state", state))
+        target = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
         return RedirectResponse(target, status_code=302)
     except (KeyError, ValueError) as exc:
         return PlainTextResponse(str(exc), status_code=400)
@@ -484,7 +620,7 @@ async def oauth_token(request: Request):
         if grant_type == "authorization_code":
             result = _oauth.exchange(str(form["code"]), str(form["client_id"]), str(form["redirect_uri"]), str(form["code_verifier"]))
         elif grant_type == "refresh_token":
-            result = _oauth.refresh(str(form["refresh_token"]))
+            result = _oauth.refresh(str(form["refresh_token"]), str(form.get("client_id", "")) or None)
         else:
             raise ValueError("unsupported grant_type")
         return JSONResponse(result)
@@ -533,8 +669,12 @@ async def gemini_list_models(ctx: Context) -> dict:
     A fallback list is returned when the upstream web client has no model
     enumeration surface. Fallback entries are explicitly marked as such.
     """
+    # Resolve the account outside the fallback boundary.  A missing OAuth
+    # identity, selection, profile, or session must fail closed rather than
+    # being mistaken for a harmless discovery failure.
+    client = await _get_client(ctx)
     try:
-        return {"models": capabilities_json(_get_client(ctx))}
+        return {"models": capabilities_json(client)}
     except Exception as exc:
         logger.warning("model discovery unavailable: %s", type(exc).__name__)
         return {"models": capabilities_json(None), "warning": "discovery_unavailable"}
@@ -543,18 +683,16 @@ async def gemini_list_models(ctx: Context) -> dict:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _get_client(ctx: Context):
-    client = ctx.request_context.lifespan_context["gemini_client"]
-    if client is None:
-        raise RuntimeError(
-            "No Gemini account is connected. Complete the browser login handoff, "
-            "then retry this tool."
-        )
-    return client
+async def _get_client(ctx: Context):
+    return await ctx.request_context.lifespan_context["account_clients"].get(ctx)
 
 
 def _get_sessions(ctx: Context) -> dict:
-    return ctx.request_context.lifespan_context["chat_sessions"]
+    return ctx.request_context.lifespan_context["account_clients"].sessions
+
+
+def _get_media_dir(ctx: Context) -> Path:
+    return ctx.request_context.lifespan_context["account_clients"].media_dir(ctx)
 
 
 _image_mode = False
@@ -916,10 +1054,11 @@ async def gemini_start_chat(
         JSON with session_id to use in subsequent gemini_chat calls.
     """
     try:
-        client = _get_client(ctx)
+        client = await _get_client(ctx)
         chat = client.start_chat(model=model or DEFAULT_MODEL)
         session_id = str(uuid.uuid4())[:8]
-        _get_sessions(ctx)[session_id] = chat
+        manager = ctx.request_context.lifespan_context["account_clients"]
+        _get_sessions(ctx)[manager.session_key(ctx, session_id)] = chat
         return json.dumps({
             "session_id": session_id,
             "model": model or DEFAULT_MODEL,
@@ -959,11 +1098,12 @@ async def gemini_chat(
         also includes the model's reasoning process.
     """
     try:
-        client = _get_client(ctx)
+        client = await _get_client(ctx)
 
         if session_id:
+            manager = ctx.request_context.lifespan_context["account_clients"]
             sessions = _get_sessions(ctx)
-            chat = sessions.get(session_id)
+            chat = sessions.get(manager.session_key(ctx, session_id))
             if not chat:
                 return f"Error: Session '{session_id}' not found. Start a new one with gemini_start_chat."
             response = await chat.send_message(prompt)
@@ -1026,7 +1166,7 @@ async def gemini_generate_image(
     import time
     t0 = time.monotonic()
     try:
-        client = _get_client(ctx)
+        client = await _get_client(ctx)
 
         # Validate input files
         resolved_files = []
@@ -1091,7 +1231,7 @@ async def gemini_generate_image(
         _image_tokens.clear()  # clean up any leftover tokens
         t = _stage("c8o8Fe (2x url) done", t)
 
-        IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+        media_dir = _get_media_dir(ctx)
         saved = []
 
         for i, image in enumerate(response.images):
@@ -1121,7 +1261,7 @@ async def gemini_generate_image(
                 # Without this gating, an un-upscaled URL with no suffix drops to a
                 # ~382px thumbnail instead of the ~896px preview.
                 filepath = await image.save(
-                    path=str(IMAGES_DIR),
+                    path=str(media_dir),
                     filename=f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{i}.png",
                     verbose=False,
                     full_size=not has_upscale,
@@ -1140,7 +1280,7 @@ async def gemini_generate_image(
                 logger.warning("Watermark removal failed: %s", wm_err)
             t = _stage(f"watermark removal image {i}", t)
             title = getattr(image, "title", None) or f"image_{i}"
-            saved.append({"title": title, "path": filepath, "dir": str(IMAGES_DIR)})
+            saved.append({"title": title, "path": filepath, "dir": str(media_dir)})
 
         # For response: prefer chat metadata (clean cid/rid/rcid), fall back to raw
         if chat:
@@ -1149,7 +1289,7 @@ async def gemini_generate_image(
             conv_id = metadata[:3] if metadata and metadata[0] else None
         result = {
             "text": response.text or "",
-            "images_saved_to": str(IMAGES_DIR),
+            "images_saved_to": str(media_dir),
             "images": saved,
             "conversation_id": conv_id,
         }
@@ -1191,7 +1331,7 @@ async def gemini_upload_file(
         if not p.exists():
             return f"Error: File not found — {p}"
 
-        client = _get_client(ctx)
+        client = await _get_client(ctx)
         response = await client.generate_content(
             prompt, model=model or DEFAULT_MODEL, files=[str(p)]
         )
@@ -1232,7 +1372,7 @@ async def gemini_analyze_url(
         Gemini's analysis of the URL content.
     """
     try:
-        client = _get_client(ctx)
+        client = await _get_client(ctx)
         full_prompt = f"{prompt}\n\n{url}"
         response = await client.generate_content(
             full_prompt, model=model or DEFAULT_MODEL
@@ -1263,19 +1403,18 @@ async def gemini_reset(ctx: Context) -> str:
     try:
         from gemini_webapi import GeminiClient
 
-        old = _get_client(ctx)
+        old = await _get_client(ctx)
         await old.close()
 
-        psid, psidts = _resolve_cookies()
-
-        account_index = int(os.environ.get("GEMINI_ACCOUNT_INDEX", "0"))
-        new_client = GeminiClient(
-            secure_1psid=psid, secure_1psidts=psidts or None, account_index=account_index
-        )
+        subject, record = _AccountClientManager._account(ctx)
+        psid, psidts = _AccountClientManager._cookies(_AccountClientManager._profile(record))
+        new_client = GeminiClient(secure_1psid=psid, secure_1psidts=psidts or None)
         await new_client.init(timeout=300, watchdog_timeout=45, auto_close=False, auto_refresh=True)
         _patch_client(new_client)
 
-        ctx.request_context.lifespan_context["gemini_client"] = new_client
+        manager = ctx.request_context.lifespan_context["account_clients"]
+        key = (subject, str(record["account"]))
+        manager.clients[key] = new_client
         return "Gemini client re-initialised with fresh cookies."
 
     except Exception as e:

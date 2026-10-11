@@ -45,7 +45,7 @@ class DynamicAccountRegistry:
         self._key = _decode_key(key) if isinstance(key, str) else key
         if len(self._key) != 32:
             raise ValueError("registry key must be exactly 32 bytes")
-        self._data: dict[str, Any] = {"version": 1, "accounts": {}}
+        self._data: dict[str, Any] = {"version": 1, "accounts": {}, "selected": {}}
         if self.path.exists():
             self._load()
         elif create:
@@ -64,6 +64,10 @@ class DynamicAccountRegistry:
         self._data = json.loads(plain.decode("utf-8"))
         if self._data.get("version") != 1 or not isinstance(self._data.get("accounts"), dict):
             raise ValueError("invalid registry contents")
+        # Version 1 files created before persistent selection existed are
+        # upgraded in memory without changing their encryption format.
+        if not isinstance(self._data.get("selected"), dict):
+            self._data["selected"] = {}
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -91,17 +95,21 @@ class DynamicAccountRegistry:
         if not _ACCOUNT.fullmatch(account):
             raise ValueError("account must contain only letters, numbers, dot, underscore, or dash")
 
-    def register(self, *, subject: str, account: str, profile: str | None = None, scopes: set[str] | frozenset[str] = frozenset({"chat"}), requests_per_minute: int = 30) -> dict[str, Any]:
+    def register(self, *, subject: str, account: str, profile: str | None = None, scopes: set[str] | frozenset[str] = frozenset({"chat"}), requests_per_minute: int = 30, state: str = "ready") -> dict[str, Any]:
         self._validate(account)
         if not subject or not isinstance(subject, str):
             raise ValueError("subject is required")
         if requests_per_minute < 1:
             raise ValueError("requests_per_minute must be positive")
+        if state not in {"pending", "ready", "disabled", "revoked"}:
+            raise ValueError("unsupported account state")
         current = self._data["accounts"].get(account)
         if current and current.get("owner_subject") != subject:
             raise PermissionError("account is already registered to another subject")
-        record = {"owner_subject": subject, "profile": profile or account, "scopes": sorted(scopes), "requests_per_minute": requests_per_minute, "state": "ready", "updated_at": int(time.time())}
+        record = {"owner_subject": subject, "profile": profile or account, "scopes": sorted(scopes), "requests_per_minute": requests_per_minute, "state": state, "updated_at": int(time.time())}
         self._data["accounts"][account] = record
+        if self._data.get("selected", {}).get(subject) == account:
+            self._data["selected"][subject] = account
         self._save()
         return dict(record, account=account)
 
@@ -122,7 +130,14 @@ class DynamicAccountRegistry:
         if len(matches) != 1:
             raise PermissionError("explicit Gemini account selection is required or account is unavailable")
         name, record = matches[0]
+        self._data.setdefault("selected", {})[subject] = name
+        self._save()
         return dict(record, account=name)
+
+    def selected(self, subject: str) -> dict[str, Any]:
+        """Return the subject's persisted selection, failing closed."""
+        account = self._data.setdefault("selected", {}).get(subject)
+        return self.select(subject, account)
 
     def list_safe(self, subject: str | None = None) -> list[dict[str, Any]]:
         result = []

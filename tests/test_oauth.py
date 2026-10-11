@@ -44,6 +44,33 @@ def test_registration_accepts_only_public_pkce_clients():
                         "token_endpoint_auth_method": "client_secret_post"})
 
 
+def test_pkce_and_state_are_strictly_bound():
+    oauth = LocalOAuth("https://gemini.example")
+    client = oauth.register({"client_name": "ChatGPT", "redirect_uris": ["https://chat.openai.com/callback"]})
+    verifier = "verifier-value-that-is-long-enough-for-state-binding-123456"
+    with pytest.raises(ValueError, match="code_challenge"):
+        oauth.begin(client["client_id"], client["redirect_uris"][0], "too-short")
+    code = oauth.begin(client["client_id"], client["redirect_uris"][0], challenge(verifier))
+    oauth.set_state(code, "expected-state")
+    with pytest.raises(ValueError, match="state"):
+        oauth.completion_redirect(code, "wrong-state")
+    oauth.complete(code, "owned-subject")
+    with pytest.raises(ValueError, match="verifier"):
+        oauth.exchange(code, client["client_id"], client["redirect_uris"][0], "short")
+
+
+def test_refresh_token_cannot_be_used_by_another_client():
+    oauth = LocalOAuth("https://gemini.example")
+    first = oauth.register({"client_name": "first", "redirect_uris": ["https://chat.openai.com/first"]})
+    second = oauth.register({"client_name": "second", "redirect_uris": ["https://chat.openai.com/second"]})
+    verifier = "verifier-value-that-is-long-enough-for-refresh-binding-123456"
+    code = oauth.begin(first["client_id"], first["redirect_uris"][0], challenge(verifier))
+    oauth.complete(code, "owned-subject")
+    tokens = oauth.exchange(code, first["client_id"], first["redirect_uris"][0], verifier)
+    with pytest.raises(ValueError, match="another client"):
+        oauth.refresh(tokens["refresh_token"], second["client_id"])
+
+
 def test_each_registration_gets_a_distinct_client():
     oauth = LocalOAuth("https://gemini.example")
     args = {"client_name": "ChatGPT Gemini", "redirect_uris": ["https://chat.openai.com/aip/callback"]}
@@ -99,7 +126,7 @@ def test_browser_handoff_link_uses_a_separate_opaque_token():
         handoff_url_factory=lambda: ("handoff-token", "https://novnc.example/vnc.html?sid=handoff-token"),
     )
     client = oauth.register({"client_name": "ChatGPT", "redirect_uris": ["https://chat.openai.com/cb"]})
-    page = oauth.authorize_page(client["client_id"], client["redirect_uris"][0], "challenge", "state")
+    page = oauth.authorize_page(client["client_id"], client["redirect_uris"][0], challenge("browser-handoff-verifier-123456789012345678901234567890"), "state")
     assert "sid=handoff-token" in page
     assert "handoff-token" != next(iter(oauth._codes))
 

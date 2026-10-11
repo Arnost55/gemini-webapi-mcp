@@ -126,18 +126,19 @@ cookies or Google credentials. Use a separate HTTPS noVNC origin, for example
 WebSocket upgrades to the container's loopback-bound port 6080.
 
 Treat the noVNC URL as a secret capability: send `Referrer-Policy: no-referrer`
-and omit its query string from proxy access logs. The temporary Chromium
-profile is deleted when its handoff is consumed or expires.
+and omit its query string from proxy access logs. A successfully completed
+profile is promoted into its new account directory; expired or failed handoffs
+are deleted.
 
 This is a browser handoff, not Google OAuth. A normal OAuth redirect can
 authenticate the MCP caller to the gateway, but it does not transfer Gemini
 Web cookies into a server-side browser profile.
 
-At present, handoff profiles are deliberately terminated after the authorization
-finishes. They prove the account login in an isolated desktop, but they are not
-automatically promoted to a long-lived account profile used by Gemini tools.
-That promotion needs explicit account binding and tool-session routing before
-it can be called multi-account execution support.
+After login, the callback validates OAuth state and one-time handoff readiness.
+The profile is registered as pending, promoted into a new account directory,
+and marked ready only after the move succeeds. The handoff token and desktop
+are removed. Gemini execution resolves the OAuth subject and selected account
+for each client, with no process-wide cookie fallback.
 
 Until an upstream identity provider is configured, ownership is separated by
 the dynamic client registration, not by a verified human identity. Do not use

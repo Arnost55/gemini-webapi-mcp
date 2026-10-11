@@ -13,6 +13,7 @@ import secrets
 import time
 import os
 import json
+import re
 from pathlib import Path
 from dataclasses import dataclass
 from threading import RLock
@@ -24,6 +25,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
 _STATE_AAD = b"gemini-webapi-mcp/oauth-state/v1"
+_PKCE_CHALLENGE = re.compile(r"^[A-Za-z0-9_-]{43}$")
+_PKCE_VERIFIER = re.compile(r"^[A-Za-z0-9._~-]{43,128}$")
 
 
 def _b64(data: bytes) -> str:
@@ -70,6 +73,8 @@ class AuthorizationCode:
     code_challenge: str
     subject: str
     expires_at: float
+    state: str
+    account: str | None = None
     handoff_token: str | None = None
     used: bool = False
 
@@ -81,14 +86,14 @@ class LocalOAuth:
                  state_key: str | bytes | None = None,
                  handoff_url_factory: Callable[[], tuple[str, str]] | None = None,
                  handoff_ready: Callable[[str], bool] | None = None,
-                 handoff_consume: Callable[[str], None] | None = None):
+                 handoff_consume: Callable[[str, str, str], None] | None = None):
         self.issuer = issuer.rstrip("/")
         self.ttl = ttl
         self.state_path = Path(state_path or os.environ.get("GEMINI_OAUTH_STATE_PATH", "")) if (state_path or os.environ.get("GEMINI_OAUTH_STATE_PATH")) else None
         self._state_key = _state_key(state_key)
         self._clients: dict[str, Client] = {}
         self._codes: dict[str, AuthorizationCode] = {}
-        self._tokens: dict[str, tuple[str, str, float]] = {}
+        self._tokens: dict[str, tuple[str, str, float, str]] = {}
         self._lock = RLock()
         self._handoff_url_factory = handoff_url_factory
         self._handoff_ready = handoff_ready
@@ -110,7 +115,7 @@ class LocalOAuth:
                 client = Client(**item)
                 self._clients[client.client_id] = client
             for token, item in data.get("tokens", {}).items():
-                self._tokens[token] = (item["subject"], item["kind"], float(item["expires_at"]))
+                self._tokens[token] = (item["subject"], item["kind"], float(item["expires_at"]), item.get("client_id", ""))
         except (OSError, ValueError, TypeError, KeyError, InvalidTag) as exc:
             raise RuntimeError(f"invalid persisted OAuth state: {self.state_path}") from exc
 
@@ -125,8 +130,8 @@ class LocalOAuth:
                 for c in self._clients.values()
             ],
             "tokens": {
-                token: {"subject": subject, "kind": kind, "expires_at": expires}
-                for token, (subject, kind, expires) in self._tokens.items()
+                token: {"subject": subject, "kind": kind, "expires_at": expires, "client_id": client_id}
+                for token, (subject, kind, expires, client_id) in self._tokens.items()
             },
         }
         serialized = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -184,11 +189,18 @@ class LocalOAuth:
             client = self._clients.get(client_id)
             if not client or redirect_uri not in client.redirect_uris:
                 raise ValueError("unknown client or redirect URI")
-            if not challenge:
-                raise ValueError("PKCE code_challenge is required")
+            if not _PKCE_CHALLENGE.fullmatch(challenge):
+                raise ValueError("PKCE code_challenge must be a base64url S256 value")
             code = _b64(secrets.token_bytes(32))
-            self._codes[code] = AuthorizationCode(code, client_id, redirect_uri, challenge, subject, time.time() + self.ttl)
+            self._codes[code] = AuthorizationCode(code, client_id, redirect_uri, challenge, subject, time.time() + self.ttl, "")
             return code
+
+    def set_state(self, code: str, state: str) -> None:
+        with self._lock:
+            item = self._codes.get(code)
+            if not item or item.expires_at <= time.time() or item.used:
+                raise ValueError("invalid or expired authorization request")
+            item.state = state
 
     def complete(self, code: str, subject: str) -> None:
         """Complete a pending browser handoff before releasing its code."""
@@ -203,13 +215,15 @@ class LocalOAuth:
             item = self._codes.get(code)
             if not item or item.used or item.expires_at <= time.time():
                 raise ValueError("invalid or expired authorization code")
+            if not _PKCE_VERIFIER.fullmatch(verifier):
+                raise ValueError("invalid PKCE verifier")
             if item.client_id != client_id or item.redirect_uri != redirect_uri or _pkce(verifier) != item.code_challenge:
                 raise ValueError("client, redirect URI, or PKCE verifier mismatch")
             item.used = True
             access = _b64(secrets.token_bytes(32))
             refresh = _b64(secrets.token_bytes(32))
-            self._tokens[access] = (item.subject, "access", time.time() + 3600)
-            self._tokens[refresh] = (item.subject, "refresh", time.time() + 2592000)
+            self._tokens[access] = (item.subject, "access", time.time() + 3600, item.client_id)
+            self._tokens[refresh] = (item.subject, "refresh", time.time() + 2592000, item.client_id)
             self._save_state()
             return {"access_token": access, "token_type": "Bearer", "expires_in": 3600, "refresh_token": refresh, "scope": "openid profile"}
 
@@ -220,18 +234,21 @@ class LocalOAuth:
                 return None
             return value[0]
 
-    def refresh(self, refresh_token: str) -> dict:
+    def refresh(self, refresh_token: str, client_id: str | None = None) -> dict:
         """Rotate a valid refresh token without extending client trust."""
         with self._lock:
             value = self._tokens.get(refresh_token)
             if not value or value[1] != "refresh" or value[2] <= time.time():
                 raise ValueError("invalid or expired refresh token")
-            subject = value[0]
+            subject, _, _, bound_client = value
+            if client_id and bound_client and client_id != bound_client:
+                raise ValueError("refresh token is bound to another client")
             self._tokens.pop(refresh_token, None)
             access = _b64(secrets.token_bytes(32))
             refresh = _b64(secrets.token_bytes(32))
-            self._tokens[access] = (subject, "access", time.time() + 3600)
-            self._tokens[refresh] = (subject, "refresh", time.time() + 2592000)
+            bound_client = bound_client or client_id or ""
+            self._tokens[access] = (subject, "access", time.time() + 3600, bound_client)
+            self._tokens[refresh] = (subject, "refresh", time.time() + 2592000, bound_client)
             self._save_state()
             return {"access_token": access, "token_type": "Bearer", "expires_in": 3600,
                     "refresh_token": refresh, "scope": "openid profile"}
@@ -242,6 +259,8 @@ class LocalOAuth:
         # separate per registered client rather than collapsing every caller
         # into a shared "local-user" identity.
         code = self.begin(client_id, redirect_uri, challenge, subject="client:" + client_id)
+        self.set_state(code, state)
+        self._codes[code].account = "gemini-" + client_id[:12] + "-" + code[:10]
         finish = self.issuer + "/oauth/complete?" + urlencode({"code": code, "state": state})
         browser_url = ""
         if self._handoff_url_factory:
@@ -266,16 +285,18 @@ body{margin:0;background:#0b1020;color:#eef2ff;font:16px system-ui,sans-serif}.c
 """ + browser_link + "<a class='button' href='" + html.escape(finish, quote=True) + "'>Continue after login</a>" + """
 <p class='small'>This page never displays or transmits your Google cookies. The authorization link expires after a short time and can be used once.</p></main></body></html>"""
 
-    def completion_redirect(self, code: str, subject: str | None = None) -> str:
+    def completion_redirect(self, code: str, state: str, subject: str | None = None) -> str:
         with self._lock:
             item = self._codes.get(code)
             if not item:
                 raise ValueError("invalid authorization request")
+            if item.state != state:
+                raise ValueError("OAuth state mismatch")
             if item.handoff_token and self._handoff_ready and not self._handoff_ready(item.handoff_token):
                 raise ValueError("Gemini login is not ready yet; finish the Chromium login and try again")
             self.complete(code, subject or item.subject)
             if item.handoff_token and self._handoff_consume:
-                self._handoff_consume(item.handoff_token)
+                self._handoff_consume(item.handoff_token, item.subject, item.account or ("gemini-" + item.code[:10]))
             parsed = urlsplit(item.redirect_uri)
             query = parse_qsl(parsed.query, keep_blank_values=True)
             query.append(("code", code))

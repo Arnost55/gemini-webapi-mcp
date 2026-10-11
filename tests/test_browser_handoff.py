@@ -55,3 +55,14 @@ def test_handoff_consumption_removes_its_vnc_capability(tmp_path: Path):
     assert session.token not in broker._sessions
     assert session.token not in (tmp_path / "novnc-tokens").read_text(encoding="utf-8")
     assert not Path(session.profile).exists()
+
+
+def test_handoff_promotion_moves_only_the_completed_profile(tmp_path: Path):
+    broker = BrowserHandoffBroker(tmp_path, runner=lambda *args, **kwargs: FakeProcess())
+    session = broker.create()
+    destination = tmp_path / "accounts" / "owned-account"
+    broker.consume(session.token, promote_to=destination)
+
+    assert destination.is_dir()
+    assert not Path(session.profile).exists()
+    assert session.token not in (tmp_path / "novnc-tokens").read_text(encoding="utf-8")

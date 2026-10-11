@@ -77,10 +77,10 @@ The browser handoff is served by the built-in OAuth authorization page when
 `GEMINI_NOVNC_PUBLIC_URL` is set. It does not claim Google OAuth support for
 Gemini Web.
 
-The handoff creates an isolated, temporary login desktop. It is intentionally
-destroyed after authorization and is not yet promoted automatically into the
-persistent profile used for Gemini tool execution; that requires explicit
-account binding and routing work.
+The handoff creates an isolated login desktop. After login and OAuth state
+validation, that profile is promoted into a new owner-bound persistent account
+profile. The browser capability is removed, and future requests load cookies
+only from the selected account profile.
 
 ### Multi-account Gemini sessions
 

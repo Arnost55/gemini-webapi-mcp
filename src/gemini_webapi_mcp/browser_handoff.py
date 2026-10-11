@@ -140,13 +140,26 @@ class BrowserHandoffBroker:
                 return False
             return data.get("state") == "ready"
 
-    def consume(self, token: str) -> None:
+    def consume(self, token: str, promote_to: str | Path | None = None) -> None:
         with self._lock:
+            destination = None
+            if promote_to is not None:
+                destination = Path(promote_to).expanduser().resolve()
+                if destination.exists():
+                    raise FileExistsError("Gemini account profile already exists")
             session = self._sessions.pop(token, None)
             if session is None:
-                return
+                raise ValueError("unknown or expired browser handoff")
+            if promote_to is None:
+                self._dispose(session)
+            else:
+                assert destination is not None
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                for process in session.processes:
+                    self._terminate(process)
+                Path(session.status_file).unlink(missing_ok=True)
+                shutil.move(session.profile, destination)
             self._write_tokens()
-            self._dispose(session)
 
     def expire(self) -> None:
         for token, session in list(self._sessions.items()):
@@ -160,13 +173,40 @@ class BrowserHandoffBroker:
         """Stop the desktop and remove its cookie-bearing Chromium profile."""
         for process in session.processes:
             self._terminate(process)
+        try:
+            Path(session.status_file).unlink(missing_ok=True)
+        except OSError:
+            pass
         shutil.rmtree(session.profile, ignore_errors=True)
 
     @staticmethod
     def _terminate(process: subprocess.Popen) -> None:
         if process.poll() is not None:
+            try:
+                process.wait(timeout=0)
+            except (AttributeError, OSError, subprocess.TimeoutExpired):
+                pass
             return
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except (OSError, ProcessLookupError):
-            process.terminate()
+            try:
+                process.terminate()
+            except OSError:
+                return
+        try:
+            process.wait(timeout=3)
+        except (AttributeError, subprocess.TimeoutExpired):
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+            try:
+                process.wait(timeout=3)
+            except (AttributeError, OSError, subprocess.TimeoutExpired):
+                # The child may be supervised by an external init process;
+                # never block an OAuth request indefinitely on cleanup.
+                pass

@@ -38,3 +38,14 @@ def test_registry_requires_explicit_selection_for_multiple_accounts(tmp_path):
     registry.set_state("two", "disabled")
     with pytest.raises(PermissionError):
         registry.select("user", "two")
+
+
+def test_registry_selection_survives_reload(tmp_path):
+    path = tmp_path / "registry.json.enc"
+    key = generate_key()
+    registry = DynamicAccountRegistry(path, key)
+    registry.register(subject="user", account="one")
+    registry.register(subject="user", account="two")
+    registry.select("user", "two")
+    restarted = DynamicAccountRegistry(path, key)
+    assert restarted.selected("user")["account"] == "two"
