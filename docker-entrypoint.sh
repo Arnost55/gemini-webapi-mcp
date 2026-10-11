@@ -1,34 +1,14 @@
 #!/bin/sh
 set -eu
 
-export DISPLAY="${DISPLAY:-:99}"
-export GEMINI_DISPLAY_WIDTH="${GEMINI_DISPLAY_WIDTH:-1440}"
-export GEMINI_DISPLAY_HEIGHT="${GEMINI_DISPLAY_HEIGHT:-900}"
-
-Xvfb "$DISPLAY" -screen 0 "${GEMINI_DISPLAY_WIDTH}x${GEMINI_DISPLAY_HEIGHT}x24" -nolisten tcp >/tmp/xvfb.log 2>&1 &
-fluxbox >/tmp/fluxbox.log 2>&1 &
-
-# VNC/noVNC are intentionally loopback-only inside the container. Put them
-# behind the one-time authenticated handoff route in the reverse proxy.
-x11vnc -display "$DISPLAY" -localhost -forever -shared -nopw -rfbport "${GEMINI_VNC_PORT:-5900}" >/tmp/x11vnc.log 2>&1 &
-# Listen on the container interface so Docker can publish the noVNC web port;
-# keep the raw VNC target private inside the container.
-websockify --web=/usr/share/novnc/ "0.0.0.0:${GEMINI_NOVNC_PORT:-6080}" "127.0.0.1:${GEMINI_VNC_PORT:-5900}" >/tmp/novnc.log 2>&1 &
-
-# Put the persistent Gemini Chromium profile on the virtual display so the
-# login handoff has an actual browser window to show through noVNC.
-browser_profile="${GEMINI_PROFILE_ROOT:-/var/lib/gemini-mcp/accounts}/default"
-mkdir -p "$browser_profile"
-browser_lock="${GEMINI_PROFILE_ROOT:-/var/lib/gemini-mcp/accounts}/.browser-owner"
-if [ -d "$browser_lock" ] && [ -r "$browser_lock/pid" ] && ! kill -0 "$(cat "$browser_lock/pid")" 2>/dev/null; then
-  rm -rf "$browser_lock"
-fi
-if mkdir "$browser_lock" 2>/dev/null; then
-  echo "$$" > "$browser_lock/pid"
-  trap 'rm -rf "$browser_lock" 2>/dev/null || true' EXIT INT TERM
-  uv run gemini-web-session --profile-dir "$browser_profile" --headed >/tmp/gemini-browser.log 2>&1 &
-else
-  echo "Gemini Chromium is already owned by another process; reusing the shared profile" >&2
-fi
+# noVNC listens on the container interface so Docker can publish its web port.
+# Each target VNC server stays on loopback and is created only for one login.
+# websockify resolves each opaque token to a distinct loopback VNC server.
+# The application updates this token map atomically when it creates/consumes a
+# login handoff. There is deliberately no shared Chromium desktop.
+handoff_root="${GEMINI_HANDOFF_ROOT:-/var/lib/gemini-mcp/handoffs}"
+mkdir -p "$handoff_root"
+: > "$handoff_root/novnc-tokens"
+websockify --web=/usr/share/novnc/ --token-plugin TokenFile --token-source "$handoff_root/novnc-tokens" "0.0.0.0:${GEMINI_NOVNC_PORT:-6080}" >/tmp/novnc.log 2>&1 &
 
 exec uv run gemini-webapi-mcp --transport streamable-http --host 0.0.0.0 --port 8000

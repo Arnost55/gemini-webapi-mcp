@@ -143,14 +143,30 @@ class GeminiSessionManager:
         self._context = self._page = self._playwright = None
 
 
+def write_safe_status(path: str | Path, status: SessionStatus) -> None:
+    """Write state atomically without serialising cookies or browser storage."""
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_suffix(output.suffix + ".tmp")
+    temporary.write_text(json.dumps(status.safe_dict(), separators=(",", ":")), encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, output)
+
+
 async def _main_async(args: argparse.Namespace) -> None:
     manager = GeminiSessionManager(args.profile_dir, args.interval, False if args.headed else None)
     try:
         status = await manager.start()
+        if args.status_file:
+            write_safe_status(args.status_file, status)
         print(status.safe_dict(), flush=True)
         if args.once:
             return
-        await manager.run()
+        while True:
+            await asyncio.sleep(manager.check_interval)
+            status = await manager.check_now()
+            if args.status_file:
+                write_safe_status(args.status_file, status)
     finally:
         await manager.stop()
 
@@ -161,5 +177,6 @@ def main() -> None:
     parser.add_argument("--interval", type=float, default=float(os.environ.get("GEMINI_SESSION_CHECK_INTERVAL", "300")))
     parser.add_argument("--headed", action="store_true", help="show Chromium for one-time human login")
     parser.add_argument("--once", action="store_true", help="check once and exit")
+    parser.add_argument("--status-file", help="write safe browser readiness state to this file")
     asyncio.run(_main_async(parser.parse_args()))
 

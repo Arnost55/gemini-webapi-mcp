@@ -53,10 +53,11 @@ tunnel in front of it:
 uv run gemini-webapi-mcp --transport streamable-http --host 127.0.0.1 --port 8000
 ```
 
-The public gateway must authenticate callers, validate OAuth access tokens and
-PKCE, enforce scopes, resolve the OAuth subject to an account, and reject
-unmapped or ambiguous selections. The MCP server does not implement Google
-OAuth. Google login remains inside the selected Chromium profile.
+The built-in authorization server publishes protected-resource metadata,
+supports dynamic public-client registration, PKCE S256, authorization-code
+exchange, refresh-token rotation, and durable state when its volume is kept.
+It does not implement Google OAuth. Google login remains inside an isolated
+Chromium profile.
 
 Configure the public origin in the gateway environment:
 
@@ -70,7 +71,8 @@ that origin to it.
 
 ### Browser handoff login
 
-For a GUI-free local client, the gateway can expose a short-lived handoff URL:
+For a GUI-free local client, the gateway exposes a short-lived custom browser
+viewer. It contains only the isolated Chromium viewport:
 
 ```text
 Connect Gemini account: work
@@ -80,13 +82,24 @@ Gemini session verified
 [Allow this account]
 ```
 
-The gateway creates a one-time handoff bound to the validated OAuth subject and
-selected account. The URL opens the isolated remote Chromium session, where the
-user completes Google login. After the session manager reports `ready`, the
-user explicitly approves the connection. The gateway then consumes the token
-and expires it. Handoffs must expire after a short period, reject replay, and
-never contain cookies or credentials. This is a browser handoff, not a claim
-that Google OAuth for Gemini Web is available.
+Each authorization creates an independent Chromium profile, X display, loopback
+VNC server, and opaque viewer capability URL. The URL expires after five minutes
+by default. Completion succeeds only after the profile reports `ready`, and it
+then removes the VNC capability and stops that temporary desktop. Browser
+cookies never appear in URLs, logs, or MCP responses. This is a browser
+handoff, not a claim that Google OAuth for Gemini Web is available.
+
+The viewer link is a short-lived capability. Configure its HTTPS/WSS proxy with
+`Referrer-Policy: no-referrer`, do not record query strings in access logs, and
+do not expose the raw VNC port. The handoff profile is promoted into
+the selected account directory after successful completion; expired or failed
+handoffs are deleted.
+
+Set `GEMINI_OAUTH_STATE_KEY_FILE` to a protected 32-byte key encoded as
+URL-safe Base64. The server uses it to encrypt durable DCR registrations and
+OAuth bearer-token records with AES-256-GCM. Reuse the same key on a container
+recreation; changing it makes the existing OAuth state unreadable and requires
+new client registrations.
 
 ## Dynamic encrypted account registry
 
@@ -97,7 +110,17 @@ uv run gemini-account-registry keygen --output ./registry.key
 chmod 600 ./registry.key
 ```
 
-The registry uses AES-256-GCM. Base64 is only used to encode the key and encrypted JSON fields; it is not encryption. The encrypted file contains account metadata and profile names, never cookies or credentials. The browser handoff registers an account only after Google login succeeds and the user explicitly approves it. Back up the encrypted registry together with the browser profile volume, and use a different key per environment.
+The registry uses AES-256-GCM. Base64 is only used to encode the key and
+encrypted JSON fields; it is not encryption. The encrypted file contains
+account metadata and profile names, never cookies or credentials. Back up the
+encrypted registry together with the browser profile volume, and use a
+different key per environment.
+
+The registry also creates `registry.json.enc.lock` beside the encrypted file.
+Keep both on the same persistent volume. Multiple workers can register and
+select accounts safely because each update locks and reloads the current file
+before an fsync plus atomic replacement. Do not place the registry on storage
+that does not provide reliable advisory file locks.
 ## Account policy
 
 Keep the policy outside Git, for example at
@@ -158,10 +181,15 @@ docker run -d \
   --cap-drop ALL \
   -p 127.0.0.1:8000:8000 \
   -v gemini-state:/var/lib/gemini-mcp \
-  -v "$PWD/accounts.json:/etc/gemini-webapi-mcp/accounts.json:ro" \
-  -e GEMINI_ACCOUNT_CONFIG=/etc/gemini-webapi-mcp/accounts.json \
-  -e GEMINI_PROFILE_ROOT=/var/lib/gemini-mcp/accounts \
+  -v "$PWD/registry.key:/run/secrets/gemini_registry_key:ro" \
+  -e GEMINI_REGISTRY_PATH=/var/lib/gemini-mcp/registry.json.enc \
+  -e GEMINI_REGISTRY_KEY_FILE=/run/secrets/gemini_registry_key \
+  -e GEMINI_OAUTH_STATE_KEY_FILE=/run/secrets/gemini_registry_key \
+  -e GEMINI_PUBLIC_URL=https://gemini.proxmoxserver.dev \
   -e GEMINI_OAUTH_STATE_PATH=/var/lib/gemini-mcp/oauth-state.json \
+  -e GEMINI_HANDOFF_ROOT=/var/lib/gemini-mcp/handoffs \
+  -e GEMINI_NOVNC_WS_URL=wss://gemini.proxmoxserver.dev/websockify \
+  -e GEMINI_VIEWER_FRAME_ANCESTORS="'self' https://chatgpt.com" \
   ghcr.io/arnost55/gemini-webapi-mcp:latest
 ```
 
@@ -171,18 +199,21 @@ encrypted account registry, and Chromium profiles. Reusing that volume keeps
 the existing ChatGPT MCP connection registered; changing or deleting it
 requires a new dynamic registration.
 
-Each OAuth authorization now gets a private, unguessable `sid` in its noVNC
-login URL. The sid is tied to that authorization request and expires with its
-five-minute handoff code, so copying a generic `/vnc.html` URL cannot attach a
-login to another authorization. Keep noVNC behind HTTPS and access control;
-the sid is an additional binding, not a replacement for authentication.
+Each OAuth authorization now gets a private, unguessable `sid` and viewer
+token. It is mapped only to the dedicated temporary VNC target for that login,
+not a shared desktop. Completion, expiry, or container restart removes the live
+desktop capability. Keep the embedded viewer and WSS transport behind HTTPS;
+the token is a short-lived capability and must never be copied to tickets,
+logs, or chat messages. Proxy
+`/websockify` with WebSocket upgrades to the container's loopback transport;
+do not expose port 6080 publicly.
 
-The container still starts one Chromium owner for the shared `default` profile.
-For simultaneous Google accounts, use separate profile directories under
-`GEMINI_PROFILE_ROOT` and map callers to those accounts through the encrypted
-registry. Do not point two accounts at the same Chromium profile. A future
-multi-display deployment can run one browser/display per handoff sid; a single
-noVNC display cannot safely show multiple users' browsers at the same time.
+The container writes token-scoped handoff manifests under the persistent state
+volume. On Debian/POSIX restart, stale manifests are cleaned only when the
+recorded processes carry the exact service markers; unrelated desktop
+processes are not terminated. Windows cleanup is conservative and leaves
+ambiguous persisted processes untouched. A restart invalidates the old live
+desktop, so begin a new login handoff if the browser page is no longer ready.
 
 ### Compose with the published image
 
@@ -201,8 +232,13 @@ services:
     environment:
       GEMINI_REGISTRY_PATH: /var/lib/gemini-mcp/registry.json.enc
       GEMINI_REGISTRY_KEY_FILE: /run/secrets/gemini_registry_key
+      GEMINI_OAUTH_STATE_KEY_FILE: /run/secrets/gemini_registry_key
       GEMINI_PROFILE_ROOT: /var/lib/gemini-mcp/accounts
       GEMINI_OAUTH_STATE_PATH: /var/lib/gemini-mcp/oauth-state.json
+      GEMINI_HANDOFF_ROOT: /var/lib/gemini-mcp/handoffs
+      GEMINI_PUBLIC_URL: https://gemini.proxmoxserver.dev
+      GEMINI_NOVNC_WS_URL: wss://gemini.proxmoxserver.dev/websockify
+      GEMINI_VIEWER_FRAME_ANCESTORS: "'self' https://chatgpt.com"
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -239,15 +275,17 @@ mapping. Never expose port 8000 directly to the Internet.
 
 ## Current integration boundaries
 
-Implemented library components include model discovery, MCP transport startup,
+Implemented components include model discovery, MCP transport startup,
 Chromium session supervision, account policy selection, rate limiting, safe
-status persistence, and browser handoff token lifecycle management.
+status persistence, built-in OAuth metadata/DCR/PKCE, encrypted durable OAuth
+state, and browser-handoff token lifecycle management.
 
-The deployment still needs a gateway application or reviewed MCP gateway to
-connect these components to HTTP routes. That gateway must provide OAuth 2.1
-metadata, PKCE S256, access-token validation, subject and scope extraction,
-login handoff routes, approval UI, HTTPS, CSRF protection, secure cookies,
-rate-limit responses, and audit logs.
+The built-in OAuth server validates bearer tokens for account management and
+Gemini execution. It binds a successful browser handoff to the OAuth subject,
+promotes the profile into the encrypted registry's account directory, and
+requires explicit selection when a subject owns multiple accounts. Put an
+additional reviewed gateway in front when offering the service to untrusted
+users.
 
 Do not describe the deployment as Google OAuth. The user still signs into
 Gemini Web inside the selected isolated browser profile.

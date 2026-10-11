@@ -41,11 +41,13 @@ need an HTTPS authorization server and protected-resource metadata, including:
 - an explicit `resource` value carried through authorization and token exchange
 - access-token validation on every MCP request
 
-The current repository does not pretend to be an authorization server. Put an
-OAuth 2.1 provider or a reviewed MCP gateway in front of the HTTP listener and
-configure its scopes to allow only the tools you intend to expose. This makes
-the ChatGPT integration testable without confusing ChatGPT identity with Google
-account authentication.
+The repository includes a small OAuth 2.1 authorization server for public
+dynamic clients: protected-resource metadata, DCR, PKCE S256, authorization
+codes, refresh-token rotation, and encrypted durable state. It does not
+authenticate against Google. Gemini Web login stays inside the isolated browser
+desktop. Its account-management tools validate issued bearer tokens; deploy a
+gateway that applies that same validation and scope policy to every generative
+MCP tool before exposing the server to other users.
 
 ## Persistent Gemini Web session
 
@@ -95,6 +97,12 @@ per-account request limits, and safe status files. A subject mapped to several
 accounts must select one explicitly. Keep registry and status files outside
 the repository and readable only by the service account.
 
+The registry is safe for multiple application workers on the same local
+filesystem: mutations take the sibling `.lock`, reload the current encrypted
+file, and commit with fsync plus atomic replacement. Keep the lock and
+registry on the same persistent volume. Network filesystems with unreliable
+advisory locking are unsupported.
+
 ## Browser handoff login
 
 When the gateway needs to connect a Google account without requiring a local
@@ -108,24 +116,54 @@ browser GUI, it can expose a short-lived handoff page:
 5. Consume the one-time handoff
 ```
 
-The repository provides the state machine in
-`gemini_webapi_mcp.handoff.HandoffManager`:
+The live server creates this lifecycle for each authorization:
 
 ```text
-pending → verified → approved → used
+pending → ready → consumed
 pending → expired
-any active state → revoked
+any active state → revoked on container restart
 ```
 
-The gateway must generate its own HTTPS route, bind the handoff to the
-validated OAuth subject and selected account, and pass the selected profile to
-the session manager. Tokens must be stored hashed, expire quickly, be
-single-use, and never contain cookies or Google credentials. The user must
-approve after the Gemini page is verified as ready.
+Each authorization receives a dedicated Chromium profile, display, loopback
+VNC listener, and opaque viewer token. The browser capability expires in five
+minutes by default and is removed after completion. Tokens never contain
+cookies or Google credentials. Publish the MCP HTTPS origin and a WSS route
+for the internal websockify transport; do not publish a raw VNC port or the
+traditional noVNC desktop page.
+
+Set `GEMINI_NOVNC_WS_URL=wss://gemini.example/websockify` and proxy that path
+to the container's loopback-bound websockify service. The OAuth page links to
+`/auth/browser/viewer?sid=...`, a custom responsive viewport that uses the RFB
+client internally. `GEMINI_VIEWER_FRAME_ANCESTORS` may contain `'self'` and
+explicit HTTPS origins such as `https://chatgpt.com` when embedding is needed;
+the same viewer can always be opened as a top-level page.
+
+Treat the viewer URL as a secret capability: send `Referrer-Policy: no-referrer`
+and omit its query string from proxy access logs. A successfully completed
+profile is promoted into its new account directory; expired or failed handoffs
+are deleted.
 
 This is a browser handoff, not Google OAuth. A normal OAuth redirect can
 authenticate the MCP caller to the gateway, but it does not transfer Gemini
 Web cookies into a server-side browser profile.
+
+After login, the callback validates OAuth state and one-time handoff readiness.
+The profile is registered as pending, promoted into a new account directory,
+and marked ready only after the move succeeds. The handoff token and desktop
+are removed. Gemini execution resolves the OAuth subject and selected account
+for each client, with no process-wide cookie fallback.
+
+On service startup, abandoned handoff manifests are inspected. On Debian/POSIX
+hosts, only processes carrying the exact persisted token and profile markers
+may be signaled; unrelated Chromium, Xvfb, fluxbox, and VNC processes are left
+alone. Temporary profiles, status files, and expired capability mappings are
+removed after ownership is established. A live owner manifest is left for its
+current broker, so two workers cannot clean each other’s active desktop.
+
+Until an upstream identity provider is configured, ownership is separated by
+the dynamic client registration, not by a verified human identity. Do not use
+that local client boundary as a substitute for user authentication in a shared
+or untrusted deployment.
 
 ## Video generation
 

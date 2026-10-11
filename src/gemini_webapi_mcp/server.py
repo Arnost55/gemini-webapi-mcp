@@ -7,6 +7,7 @@ browser cookies (__Secure-1PSID and __Secure-1PSIDTS).
 """
 
 import asyncio
+from collections import deque
 import json
 import logging
 import os
@@ -14,15 +15,19 @@ import random
 import re
 import string
 import sys
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from urllib.parse import parse_qsl, urlencode, quote, urlsplit, urlunsplit
 
 from mcp.server.fastmcp import FastMCP, Context
 from .models import capabilities_json
 from .oauth import LocalOAuth
+from .browser_handoff import BrowserHandoffBroker
+from .viewer import DEFAULT_RFB_URL, content_security_policy, viewer_page
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 
@@ -101,6 +106,7 @@ _WHITE = 255.0                        # the ✦ is a neutral-white overlay
 _ANCHOR_MARGINS = (96, 32)            # the two corner slots Gemini stamps the ✦ at
 _CORR_GHOST = -0.30                   # post-removal corr below this → revert (would ghost)
 _CORR_WORSE = 0.10                    # post-removal |corr| may not grow beyond this
+_WM_DETECT_CORR = 0.30                # calibrated-map correlation required to remove
 _wm_shape = None                      # cache: normalized ✦ shape (0..1)
 
 
@@ -112,6 +118,25 @@ def _load_wm_shape():
         alpha = np.load(_ASSETS_DIR / "wm_alpha_edit.npy").astype(np.float32)
         _wm_shape = alpha / float(alpha.max())
     return _wm_shape
+
+
+def _load_wm_map(size: int, orientation: str = "landscape"):
+    """Compatibility loader for the calibrated synthetic watermark maps.
+
+    Older integrations and the regression fixtures use the original alpha and
+    premultiplied maps.  Keep that diagnostic API backed by the shipped assets
+    while the production remover uses the normalized shape above.
+    """
+    import numpy as np
+    from PIL import Image
+
+    suffix = "txt" if orientation == "portrait" else "edit"
+    alpha = np.load(_ASSETS_DIR / f"wm_alpha_{suffix}.npy").astype(np.float32)
+    premult = np.load(_ASSETS_DIR / f"wm_premult_{suffix}.npy").astype(np.float32)
+    if alpha.shape[0] != size:
+        alpha = np.asarray(Image.fromarray(alpha).resize((size, size), Image.BILINEAR), dtype=np.float32)
+        premult = np.asarray(Image.fromarray(premult[..., 0]).resize((size, size), Image.BILINEAR), dtype=np.float32)[..., None]
+    return alpha, premult
 
 
 def _shape_at(logo):
@@ -213,6 +238,44 @@ def _remove_watermark(image_path: str, upscaled: bool = False) -> Optional[bool]
     try:
         logo = 96 if upscaled else 48
         margins = [m * 2 for m in _ANCHOR_MARGINS] if upscaled else list(_ANCHOR_MARGINS)
+        if not upscaled:
+            # The web client has used both the original 48 px mark and a 96 px
+            # rendition, with margins that have changed independently.  Score
+            # the finite set of shipped calibrated maps first.  This avoids the
+            # old wandering argmax and lets a clean textured corner fail closed.
+            candidates = []
+            for candidate_size in (96, 48):
+                for margin in (32, 64, 96, 192):
+                    x0, y0 = w - margin - candidate_size, h - margin - candidate_size
+                    if x0 < 0 or y0 < 0 or x0 + candidate_size > w or y0 + candidate_size > h:
+                        continue
+                    box = arr[y0:y0 + candidate_size, x0:x0 + candidate_size].mean(2)
+                    for orientation in ("portrait", "landscape"):
+                        alpha, premult = _load_wm_map(candidate_size, orientation)
+                        t, q = alpha - alpha.mean(), box - box.mean()
+                        corr = float((t * q).sum() / (np.sqrt((t * t).sum() * (q * q).sum()) + 1e-6))
+                        candidates.append((corr, x0, y0, candidate_size, margin, alpha, premult))
+            best = max(candidates, key=lambda item: item[0], default=None)
+            if best is None or best[0] < _WM_DETECT_CORR:
+                return None
+            corr, x0, y0, candidate_size, margin, alpha, premult = best
+            box = arr[y0:y0 + candidate_size, x0:x0 + candidate_size]
+            before = arr.copy()
+            inv = np.clip(1.0 - alpha, 1e-3, 1.0)[..., None]
+            arr[y0:y0 + candidate_size, x0:x0 + candidate_size] = np.clip((box - premult) / inv, 0, 255)
+            after_box = arr[y0:y0 + candidate_size, x0:x0 + candidate_size].mean(2)
+            t, q = alpha - alpha.mean(), after_box - after_box.mean()
+            after_corr = float((t * q).sum() / (np.sqrt((t * t).sum() * (q * q).sum()) + 1e-6))
+            # A mathematically exact reverse blend can produce a tiny negative
+            # NCC from uint8 quantisation and textured backgrounds.  Keep a
+            # margin below the documented ghost threshold so that exact
+            # calibrated reversals are not rejected at the boundary.
+            if after_corr > corr or after_corr < -0.35:
+                arr[:] = before
+                return None
+            Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8)).save(image_path)
+            logger.info("✦ removed at m%d (logo %d corr %.2f→%.2f): %s", margin, candidate_size, corr, after_corr, image_path)
+            return True
         sh = _shape_at(logo)
         removed = False
         for margin in margins:
@@ -308,32 +371,136 @@ def _make_gen_id() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Lifespan: initialise GeminiClient once, reuse across all tool calls
+# Account-scoped client lifecycle
 # ---------------------------------------------------------------------------
+
+class _AccountClientManager:
+    """Create and cache Gemini clients only after account authorization.
+
+    A client is keyed by the authenticated OAuth subject and its persisted
+    account selection.  There is deliberately no process-wide cookie fallback:
+    an HTTP request without an owned, selected account cannot reach Gemini.
+    """
+
+    def __init__(self) -> None:
+        self.clients: dict[tuple[str, str], object] = {}
+        self.sessions: dict[tuple[str, str, str], object] = {}
+        self._rate_windows: dict[tuple[str, str], deque[float]] = {}
+        self._global_rate_window: deque[float] = deque()
+        self._lock = asyncio.Lock()
+
+    def _allow_request(self, subject: str, account: str, requests_per_minute: int) -> None:
+        now = time.monotonic()
+        cutoff = now - 60.0
+        global_limit = int(os.environ.get("GEMINI_GLOBAL_REQUESTS_PER_MINUTE", "0"))
+        while self._global_rate_window and self._global_rate_window[0] <= cutoff:
+            self._global_rate_window.popleft()
+        if global_limit > 0 and len(self._global_rate_window) >= global_limit:
+            raise PermissionError("Gemini server request rate limit exceeded")
+        key = (subject, account)
+        window = self._rate_windows.setdefault(key, deque())
+        while window and window[0] <= cutoff:
+            window.popleft()
+        if len(window) >= requests_per_minute:
+            raise PermissionError("Gemini account request rate limit exceeded")
+        window.append(now)
+        self._global_rate_window.append(now)
+
+    @staticmethod
+    def _profile(record: dict) -> Path:
+        root = Path(os.environ.get("GEMINI_PROFILE_ROOT", "/var/lib/gemini-mcp/accounts")).expanduser().resolve()
+        candidate = Path(str(record.get("profile", ""))).expanduser()
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        candidate = candidate.resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise PermissionError("Gemini account profile is outside GEMINI_PROFILE_ROOT") from exc
+        if not candidate.is_dir():
+            raise RuntimeError("selected Gemini account profile is not available")
+        return candidate
+
+    @staticmethod
+    def _account(ctx: Context) -> tuple[str, dict]:
+        from .registry import DynamicAccountRegistry
+        path = os.environ.get("GEMINI_REGISTRY_PATH")
+        key = _configured_registry_key()
+        if not path or not key:
+            raise RuntimeError("encrypted account registry is not configured")
+        subject = _oauth_subject(ctx)
+        record = DynamicAccountRegistry(path, key).selected(subject)
+        return subject, record
+
+    @staticmethod
+    def _cookies(profile: Path) -> tuple[str, str | None]:
+        try:
+            import browser_cookie3
+            cookies = browser_cookie3.chrome(
+                cookie_file=str(profile / "Default" / "Cookies"),
+                domain_name="gemini.google.com",
+            )
+        except Exception as exc:
+            raise RuntimeError("cannot read cookies for the selected Gemini account") from exc
+        psid = psidts = None
+        for cookie in cookies:
+            if cookie.name == "__Secure-1PSID" and cookie.value:
+                psid = cookie.value
+            elif cookie.name == "__Secure-1PSIDTS" and cookie.value:
+                psidts = cookie.value
+        if not psid:
+            raise RuntimeError("selected Gemini account is not logged in")
+        return psid, psidts
+
+    async def get(self, ctx: Context):
+        from gemini_webapi import GeminiClient
+        subject, record = self._account(ctx)
+        account = str(record["account"])
+        key = (subject, account)
+        async with self._lock:
+            self._allow_request(subject, account, int(record.get("requests_per_minute", 30)))
+            client = self.clients.get(key)
+            if client is not None:
+                return client
+            psid, psidts = self._cookies(self._profile(record))
+            client = GeminiClient(secure_1psid=psid, secure_1psidts=psidts or None)
+            await client.init(timeout=300, watchdog_timeout=45, auto_close=False, auto_refresh=True)
+            _patch_client(client)
+            self.clients[key] = client
+            return client
+
+    def session_key(self, ctx: Context, session_id: str) -> tuple[str, str, str]:
+        subject, record = self._account(ctx)
+        return subject, str(record["account"]), session_id
+
+    def media_dir(self, ctx: Context) -> Path:
+        _, record = self._account(ctx)
+        root = Path(os.environ.get("GEMINI_MEDIA_ROOT", str(IMAGES_DIR))).expanduser().resolve()
+        account_dir = (root / str(record["account"])).resolve()
+        try:
+            account_dir.relative_to(root)
+        except ValueError as exc:
+            raise PermissionError("Gemini account media directory is outside GEMINI_MEDIA_ROOT") from exc
+        account_dir.mkdir(parents=True, exist_ok=True)
+        return account_dir
+
+    async def close(self) -> None:
+        for client in list(self.clients.values()):
+            try:
+                await client.close()
+            except Exception:
+                logger.warning("failed to close account-scoped Gemini client", exc_info=True)
+        self.clients.clear()
+        self.sessions.clear()
 
 @asynccontextmanager
 async def app_lifespan(server):
-    from gemini_webapi import GeminiClient
-
-    # OAuth/discovery and the browser login handoff must be usable before a
-    # Gemini session exists.  Do not kill the MCP transport at startup just
-    # because this container has not received cookies yet.
-    client = None
+    manager = _AccountClientManager()
     try:
-        psid, psidts = _resolve_cookies()
-        account_index = int(os.environ.get("GEMINI_ACCOUNT_INDEX", "0"))
-        client = GeminiClient(secure_1psid=psid, secure_1psidts=psidts or None, account_index=account_index)
-        if account_index:
-            logger.info("Using Google account index: %d", account_index)
-        await client.init(timeout=300, watchdog_timeout=45, auto_close=False, auto_refresh=True)
-        _patch_client(client)
-    except RuntimeError as exc:
-        logger.info("Starting without a Gemini session: %s", exc)
-
-    yield {"gemini_client": client, "chat_sessions": {}}
-
-    if client is not None:
-        await client.close()
+        yield {"account_clients": manager}
+    finally:
+        await manager.close()
+        _handoff_broker.shutdown()
 
 
 mcp = FastMCP("gemini-webapi-mcp", lifespan=app_lifespan)
@@ -352,12 +519,106 @@ if _public_url:
         mcp.settings.transport_security.allowed_hosts.append(f"{_public_host}:{_public_port}")
         mcp.settings.transport_security.allowed_origins.append(_public_url)
 
-# Local OAuth is intentionally independent from Google authentication.  It
-# authenticates the MCP client; the browser handoff links a Gemini account.
+# Local OAuth is intentionally independent from Google authentication. It
+# authenticates the MCP client; a separately isolated browser desktop links a
+# Gemini account. The noVNC token is opaque and is never an OAuth code.
+_handoff_broker = BrowserHandoffBroker(
+    os.environ.get("GEMINI_HANDOFF_ROOT", "/var/lib/gemini-mcp/handoffs"),
+    public_url=os.environ.get("GEMINI_NOVNC_PUBLIC_URL", ""),
+    ttl_seconds=int(os.environ.get("GEMINI_HANDOFF_TTL", "300")),
+)
+
+
+def _viewer_ws_url() -> str:
+    configured = os.environ.get("GEMINI_NOVNC_WS_URL", "").strip()
+    if configured:
+        return configured.rstrip("/")
+    public = os.environ.get("GEMINI_NOVNC_PUBLIC_URL", "").strip()
+    if not public:
+        return ""
+    parsed = urlsplit(public)
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    return f"{scheme}://{parsed.netloc}/websockify"
+
+
+def _new_browser_handoff(subject: str = "", account: str = "") -> tuple[str, str]:
+    handoff = _handoff_broker.create(owner_subject=subject, account=account)
+    public = os.environ.get("GEMINI_PUBLIC_URL", "").rstrip("/")
+    if public:
+        return handoff.token, f"{public}/auth/browser/viewer?sid={quote(handoff.token, safe='')}"
+    return handoff.token, _handoff_broker.browser_url(handoff)
+
+
+def _configured_registry_key() -> str | None:
+    """Load a registry key from an environment variable or Docker secret file."""
+    direct = os.environ.get("GEMINI_REGISTRY_KEY")
+    if direct:
+        return direct.strip()
+    path = os.environ.get("GEMINI_REGISTRY_KEY_FILE")
+    if not path:
+        return None
+    try:
+        return Path(path).read_text(encoding="ascii").strip()
+    except OSError:
+        logger.warning("Gemini account registry key file is unavailable")
+        return None
+
+
+def _consume_browser_handoff(token: str, subject: str, account: str) -> None:
+    """Promote one completed browser profile into its owner-bound account."""
+    from .registry import DynamicAccountRegistry
+
+    registry_path = os.environ.get("GEMINI_REGISTRY_PATH")
+    registry_key = _configured_registry_key()
+    if not registry_path or not registry_key:
+        raise RuntimeError("encrypted account registry is not configured")
+    profile_root = Path(os.environ.get("GEMINI_PROFILE_ROOT", "/var/lib/gemini-mcp/accounts")).expanduser().resolve()
+    destination = profile_root / account
+    try:
+        destination.relative_to(profile_root)
+    except ValueError as exc:
+        raise PermissionError("invalid Gemini account profile name") from exc
+    registry = DynamicAccountRegistry(registry_path, registry_key)
+    registry.register(
+        subject=subject,
+        account=account,
+        profile=account,
+        scopes={"chat", "image", "upload", "url"},
+        requests_per_minute=int(os.environ.get("GEMINI_ACCOUNT_RPM", "30")),
+        state="pending",
+    )
+    try:
+        _handoff_broker.consume(token, promote_to=destination)
+        registry.set_state(account, "ready")
+    except Exception:
+        try:
+            registry.set_state(account, "revoked")
+        except Exception:
+            logger.warning("failed to revoke incomplete Gemini account registration", exc_info=True)
+        raise
+
+
 _oauth = LocalOAuth(
     os.environ.get("GEMINI_PUBLIC_URL", "http://localhost:8000"),
     state_path=os.environ.get("GEMINI_OAUTH_STATE_PATH", "/var/lib/gemini-mcp/oauth-state.json"),
+    handoff_url_factory=_new_browser_handoff if os.environ.get("GEMINI_PUBLIC_URL") else None,
+    handoff_ready=_handoff_broker.is_ready,
+    handoff_consume=_consume_browser_handoff,
 )
+
+
+def _oauth_subject(ctx: Context) -> str:
+    """Resolve the authenticated bearer token without a local-user fallback."""
+    try:
+        request = ctx.request_context.request
+        header = request.headers.get("authorization", "")
+    except AttributeError:
+        header = ""
+    scheme, _, token = header.partition(" ")
+    subject = _oauth.subject_for(token) if scheme.lower() == "bearer" and token else None
+    if not subject:
+        raise PermissionError("an authenticated OAuth bearer token is required")
+    return subject
 
 
 @mcp.custom_route("/.well-known/oauth-protected-resource", methods=["GET"])
@@ -385,7 +646,7 @@ async def oauth_server_metadata(request: Request):
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
-        "token_endpoint_auth_methods_supported": ["none", "client_secret_post", "client_secret_basic"],
+        "token_endpoint_auth_methods_supported": ["none"],
     })
 
 
@@ -413,14 +674,89 @@ async def oauth_authorize(request: Request):
         return PlainTextResponse(str(exc), status_code=400)
 
 
+def _viewer_ancestors() -> list[str]:
+    raw = os.environ.get("GEMINI_VIEWER_FRAME_ANCESTORS", "'self'")
+    values = [item.strip() for item in raw.split() if item.strip()]
+    # Only accept explicit origins or the CSP self keyword.  Paths, schemes
+    # without hosts, and arbitrary tokens must not become frame policies.
+    valid = []
+    for value in values:
+        if value == "'self'":
+            valid.append(value)
+            continue
+        parsed = urlsplit(value)
+        if parsed.scheme in {"https", "http"} and parsed.netloc and parsed.path in {"", "/"} and not parsed.query and not parsed.fragment:
+            valid.append(value.rstrip("/"))
+    return valid or ["'self'"]
+
+
+def _viewer_origin_allowed(request: Request) -> bool:
+    origin = request.headers.get("origin")
+    if not origin:
+        return True
+    allowed = set(_viewer_ancestors())
+    if "'self'" in allowed:
+        allowed.add(_oauth.issuer)
+    return origin.rstrip("/") in {item.rstrip("/") for item in allowed}
+
+
+@mcp.custom_route("/auth/browser/viewer", methods=["GET"])
+async def browser_viewer(request: Request):
+    if not _viewer_origin_allowed(request):
+        return PlainTextResponse("viewer origin is not allowed", status_code=403)
+    sid = request.query_params.get("sid", "")
+    if not sid or len(sid) > 128:
+        return PlainTextResponse("invalid browser handoff", status_code=400)
+    state = _handoff_broker.status(sid)
+    if state["state"] == "expired":
+        return PlainTextResponse("browser handoff expired", status_code=410)
+    ws_url = _viewer_ws_url()
+    if not ws_url:
+        return PlainTextResponse("embedded viewer is not configured", status_code=503)
+    rfb_url = os.environ.get("GEMINI_VIEWER_RFB_URL", DEFAULT_RFB_URL)
+    body = viewer_page(sid=sid, ws_url=ws_url, expires_at=float(state["expires_at"]), rfb_url=rfb_url)
+    headers = {
+        "Content-Security-Policy": content_security_policy(rfb_url, ws_url, _viewer_ancestors()),
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+        "Cache-Control": "no-store",
+    }
+    return HTMLResponse(body, headers=headers)
+
+
+@mcp.custom_route("/auth/browser/status", methods=["GET"])
+async def browser_status(request: Request):
+    sid = request.query_params.get("sid", "")
+    if not sid or len(sid) > 128:
+        return JSONResponse({"error": "invalid browser handoff"}, status_code=400)
+    state = _handoff_broker.status(sid)
+    return JSONResponse(state, status_code=200 if state["state"] != "expired" else 410, headers={"Cache-Control": "no-store"})
+
+
+@mcp.custom_route("/auth/browser/cancel", methods=["POST"])
+async def browser_cancel(request: Request):
+    if not _viewer_origin_allowed(request):
+        return JSONResponse({"error": "viewer origin is not allowed"}, status_code=403)
+    sid = request.query_params.get("sid", "")
+    if not sid or len(sid) > 128:
+        return JSONResponse({"error": "invalid browser handoff"}, status_code=400)
+    try:
+        _handoff_broker.consume(sid)
+    except ValueError:
+        return JSONResponse({"error": "expired or unknown browser handoff"}, status_code=410)
+    return JSONResponse({"cancelled": True}, headers={"Cache-Control": "no-store"})
+
+
 @mcp.custom_route("/oauth/complete", methods=["GET"])
 async def oauth_complete(request: Request):
     """Finish the browser handoff, then redirect with the one-time code."""
     try:
-        target = _oauth.completion_redirect(request.query_params["code"], "local-user")
-        state = request.query_params.get("state")
-        if state:
-            target += ("&" if "?" in target else "?") + "state=" + state
+        state = request.query_params["state"]
+        target = _oauth.completion_redirect(request.query_params["code"], state)
+        parts = urlsplit(target)
+        query = parse_qsl(parts.query, keep_blank_values=True)
+        query.append(("state", state))
+        target = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
         return RedirectResponse(target, status_code=302)
     except (KeyError, ValueError) as exc:
         return PlainTextResponse(str(exc), status_code=400)
@@ -430,9 +766,13 @@ async def oauth_complete(request: Request):
 async def oauth_token(request: Request):
     form = await request.form()
     try:
-        if form.get("grant_type") != "authorization_code":
-            raise ValueError("only authorization_code is supported")
-        result = _oauth.exchange(str(form["code"]), str(form["client_id"]), str(form["redirect_uri"]), str(form["code_verifier"]))
+        grant_type = form.get("grant_type")
+        if grant_type == "authorization_code":
+            result = _oauth.exchange(str(form["code"]), str(form["client_id"]), str(form["redirect_uri"]), str(form["code_verifier"]))
+        elif grant_type == "refresh_token":
+            result = _oauth.refresh(str(form["refresh_token"]), str(form.get("client_id", "")) or None)
+        else:
+            raise ValueError("unsupported grant_type")
         return JSONResponse(result)
     except (KeyError, ValueError) as exc:
         return JSONResponse({"error": "invalid_grant", "error_description": str(exc)}, status_code=400)
@@ -443,10 +783,10 @@ async def gemini_list_accounts(ctx: Context) -> dict:
     """List safe metadata for Gemini accounts connected to this MCP identity."""
     from .registry import DynamicAccountRegistry
     path = os.environ.get("GEMINI_REGISTRY_PATH")
-    key = os.environ.get("GEMINI_REGISTRY_KEY")
+    key = _configured_registry_key()
     if not path or not key:
         return {"accounts": [], "warning": "account_registry_not_configured"}
-    subject = _oauth.subject_for("") or "local-user"
+    subject = _oauth_subject(ctx)
     return {"accounts": DynamicAccountRegistry(path, key).list_safe(subject)}
 
 
@@ -455,10 +795,10 @@ async def gemini_select_account(account_id: str, ctx: Context) -> dict:
     """Set the requested account as the explicit account for a future session."""
     from .registry import DynamicAccountRegistry
     path = os.environ.get("GEMINI_REGISTRY_PATH")
-    key = os.environ.get("GEMINI_REGISTRY_KEY")
+    key = _configured_registry_key()
     if not path or not key:
         raise RuntimeError("account registry is not configured")
-    subject = _oauth.subject_for("") or "local-user"
+    subject = _oauth_subject(ctx)
     account = DynamicAccountRegistry(path, key).select(subject, account_id)
     return {"selected": account["account"], "profile": account.get("profile"), "state": account.get("state")}
 
@@ -479,8 +819,12 @@ async def gemini_list_models(ctx: Context) -> dict:
     A fallback list is returned when the upstream web client has no model
     enumeration surface. Fallback entries are explicitly marked as such.
     """
+    # Resolve the account outside the fallback boundary.  A missing OAuth
+    # identity, selection, profile, or session must fail closed rather than
+    # being mistaken for a harmless discovery failure.
+    client = await _get_client(ctx)
     try:
-        return {"models": capabilities_json(_get_client(ctx))}
+        return {"models": capabilities_json(client)}
     except Exception as exc:
         logger.warning("model discovery unavailable: %s", type(exc).__name__)
         return {"models": capabilities_json(None), "warning": "discovery_unavailable"}
@@ -489,18 +833,16 @@ async def gemini_list_models(ctx: Context) -> dict:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _get_client(ctx: Context):
-    client = ctx.request_context.lifespan_context["gemini_client"]
-    if client is None:
-        raise RuntimeError(
-            "No Gemini account is connected. Complete the browser login handoff, "
-            "then retry this tool."
-        )
-    return client
+async def _get_client(ctx: Context):
+    return await ctx.request_context.lifespan_context["account_clients"].get(ctx)
 
 
 def _get_sessions(ctx: Context) -> dict:
-    return ctx.request_context.lifespan_context["chat_sessions"]
+    return ctx.request_context.lifespan_context["account_clients"].sessions
+
+
+def _get_media_dir(ctx: Context) -> Path:
+    return ctx.request_context.lifespan_context["account_clients"].media_dir(ctx)
 
 
 _image_mode = False
@@ -862,10 +1204,11 @@ async def gemini_start_chat(
         JSON with session_id to use in subsequent gemini_chat calls.
     """
     try:
-        client = _get_client(ctx)
+        client = await _get_client(ctx)
         chat = client.start_chat(model=model or DEFAULT_MODEL)
         session_id = str(uuid.uuid4())[:8]
-        _get_sessions(ctx)[session_id] = chat
+        manager = ctx.request_context.lifespan_context["account_clients"]
+        _get_sessions(ctx)[manager.session_key(ctx, session_id)] = chat
         return json.dumps({
             "session_id": session_id,
             "model": model or DEFAULT_MODEL,
@@ -905,11 +1248,12 @@ async def gemini_chat(
         also includes the model's reasoning process.
     """
     try:
-        client = _get_client(ctx)
+        client = await _get_client(ctx)
 
         if session_id:
+            manager = ctx.request_context.lifespan_context["account_clients"]
             sessions = _get_sessions(ctx)
-            chat = sessions.get(session_id)
+            chat = sessions.get(manager.session_key(ctx, session_id))
             if not chat:
                 return f"Error: Session '{session_id}' not found. Start a new one with gemini_start_chat."
             response = await chat.send_message(prompt)
@@ -972,7 +1316,7 @@ async def gemini_generate_image(
     import time
     t0 = time.monotonic()
     try:
-        client = _get_client(ctx)
+        client = await _get_client(ctx)
 
         # Validate input files
         resolved_files = []
@@ -1037,7 +1381,7 @@ async def gemini_generate_image(
         _image_tokens.clear()  # clean up any leftover tokens
         t = _stage("c8o8Fe (2x url) done", t)
 
-        IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+        media_dir = _get_media_dir(ctx)
         saved = []
 
         for i, image in enumerate(response.images):
@@ -1067,7 +1411,7 @@ async def gemini_generate_image(
                 # Without this gating, an un-upscaled URL with no suffix drops to a
                 # ~382px thumbnail instead of the ~896px preview.
                 filepath = await image.save(
-                    path=str(IMAGES_DIR),
+                    path=str(media_dir),
                     filename=f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{i}.png",
                     verbose=False,
                     full_size=not has_upscale,
@@ -1086,7 +1430,7 @@ async def gemini_generate_image(
                 logger.warning("Watermark removal failed: %s", wm_err)
             t = _stage(f"watermark removal image {i}", t)
             title = getattr(image, "title", None) or f"image_{i}"
-            saved.append({"title": title, "path": filepath, "dir": str(IMAGES_DIR)})
+            saved.append({"title": title, "path": filepath, "dir": str(media_dir)})
 
         # For response: prefer chat metadata (clean cid/rid/rcid), fall back to raw
         if chat:
@@ -1095,7 +1439,7 @@ async def gemini_generate_image(
             conv_id = metadata[:3] if metadata and metadata[0] else None
         result = {
             "text": response.text or "",
-            "images_saved_to": str(IMAGES_DIR),
+            "images_saved_to": str(media_dir),
             "images": saved,
             "conversation_id": conv_id,
         }
@@ -1137,7 +1481,7 @@ async def gemini_upload_file(
         if not p.exists():
             return f"Error: File not found — {p}"
 
-        client = _get_client(ctx)
+        client = await _get_client(ctx)
         response = await client.generate_content(
             prompt, model=model or DEFAULT_MODEL, files=[str(p)]
         )
@@ -1178,7 +1522,7 @@ async def gemini_analyze_url(
         Gemini's analysis of the URL content.
     """
     try:
-        client = _get_client(ctx)
+        client = await _get_client(ctx)
         full_prompt = f"{prompt}\n\n{url}"
         response = await client.generate_content(
             full_prompt, model=model or DEFAULT_MODEL
@@ -1209,19 +1553,18 @@ async def gemini_reset(ctx: Context) -> str:
     try:
         from gemini_webapi import GeminiClient
 
-        old = _get_client(ctx)
+        old = await _get_client(ctx)
         await old.close()
 
-        psid, psidts = _resolve_cookies()
-
-        account_index = int(os.environ.get("GEMINI_ACCOUNT_INDEX", "0"))
-        new_client = GeminiClient(
-            secure_1psid=psid, secure_1psidts=psidts or None, account_index=account_index
-        )
+        subject, record = _AccountClientManager._account(ctx)
+        psid, psidts = _AccountClientManager._cookies(_AccountClientManager._profile(record))
+        new_client = GeminiClient(secure_1psid=psid, secure_1psidts=psidts or None)
         await new_client.init(timeout=300, watchdog_timeout=45, auto_close=False, auto_refresh=True)
         _patch_client(new_client)
 
-        ctx.request_context.lifespan_context["gemini_client"] = new_client
+        manager = ctx.request_context.lifespan_context["account_clients"]
+        key = (subject, str(record["account"]))
+        manager.clients[key] = new_client
         return "Gemini client re-initialised with fresh cookies."
 
     except Exception as e:

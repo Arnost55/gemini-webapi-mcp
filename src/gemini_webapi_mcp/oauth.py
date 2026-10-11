@@ -13,10 +13,21 @@ import secrets
 import time
 import os
 import json
+import re
+import inspect
 from pathlib import Path
 from dataclasses import dataclass
 from threading import RLock
-from urllib.parse import urlencode, urlsplit, urlunsplit, parse_qsl
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from typing import Callable
+
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+
+_STATE_AAD = b"gemini-webapi-mcp/oauth-state/v1"
+_PKCE_CHALLENGE = re.compile(r"^[A-Za-z0-9_-]{43}$")
+_PKCE_VERIFIER = re.compile(r"^[A-Za-z0-9._~-]{43,128}$")
 
 
 def _b64(data: bytes) -> str:
@@ -25,6 +36,25 @@ def _b64(data: bytes) -> str:
 
 def _pkce(verifier: str) -> str:
     return _b64(hashlib.sha256(verifier.encode("ascii")).digest())
+
+
+def _state_key(value: str | bytes | None) -> bytes | None:
+    """Read a URL-safe base64 encoded, 32-byte state-encryption key."""
+    if value is None:
+        value = os.environ.get("GEMINI_OAUTH_STATE_KEY")
+        key_file = os.environ.get("GEMINI_OAUTH_STATE_KEY_FILE")
+        if not value and key_file:
+            value = Path(key_file).read_text(encoding="ascii").strip()
+    if not value:
+        return None
+    encoded = value.encode("ascii") if isinstance(value, str) else value
+    try:
+        decoded = base64.urlsafe_b64decode(encoded + b"=" * (-len(encoded) % 4))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ValueError("OAuth state key must be URL-safe base64") from exc
+    if len(decoded) != 32:
+        raise ValueError("OAuth state key must decode to 32 bytes")
+    return decoded
 
 
 @dataclass
@@ -44,20 +74,31 @@ class AuthorizationCode:
     code_challenge: str
     subject: str
     expires_at: float
+    state: str
+    account: str | None = None
+    handoff_token: str | None = None
     used: bool = False
 
 
 class LocalOAuth:
-    """In-memory OAuth state; persistent client storage can be added later."""
+    """Local OAuth 2.1 state with durable DCR and refresh-token records."""
 
-    def __init__(self, issuer: str, ttl: int = 300, state_path: str | None = None):
+    def __init__(self, issuer: str, ttl: int = 300, state_path: str | None = None,
+                 state_key: str | bytes | None = None,
+                 handoff_url_factory: Callable[..., tuple[str, str]] | None = None,
+                 handoff_ready: Callable[[str], bool] | None = None,
+                 handoff_consume: Callable[[str, str, str], None] | None = None):
         self.issuer = issuer.rstrip("/")
         self.ttl = ttl
         self.state_path = Path(state_path or os.environ.get("GEMINI_OAUTH_STATE_PATH", "")) if (state_path or os.environ.get("GEMINI_OAUTH_STATE_PATH")) else None
+        self._state_key = _state_key(state_key)
         self._clients: dict[str, Client] = {}
         self._codes: dict[str, AuthorizationCode] = {}
-        self._tokens: dict[str, tuple[str, str, float]] = {}
+        self._tokens: dict[str, tuple[str, str, float, str]] = {}
         self._lock = RLock()
+        self._handoff_url_factory = handoff_url_factory
+        self._handoff_ready = handoff_ready
+        self._handoff_consume = handoff_consume
         self._load_state()
 
     def _load_state(self) -> None:
@@ -65,12 +106,18 @@ class LocalOAuth:
             return
         try:
             data = json.loads(self.state_path.read_text(encoding="utf-8"))
+            if data.get("algorithm") == "AES-256-GCM":
+                if self._state_key is None:
+                    raise RuntimeError("persisted OAuth state is encrypted; configure GEMINI_OAUTH_STATE_KEY_FILE")
+                nonce = base64.urlsafe_b64decode(data["nonce"])
+                ciphertext = base64.urlsafe_b64decode(data["ciphertext"])
+                data = json.loads(AESGCM(self._state_key).decrypt(nonce, ciphertext, _STATE_AAD))
             for item in data.get("clients", []):
                 client = Client(**item)
                 self._clients[client.client_id] = client
             for token, item in data.get("tokens", {}).items():
-                self._tokens[token] = (item["subject"], item["kind"], float(item["expires_at"]))
-        except (OSError, ValueError, TypeError, KeyError) as exc:
+                self._tokens[token] = (item["subject"], item["kind"], float(item["expires_at"]), item.get("client_id", ""))
+        except (OSError, ValueError, TypeError, KeyError, InvalidTag) as exc:
             raise RuntimeError(f"invalid persisted OAuth state: {self.state_path}") from exc
 
     def _save_state(self) -> None:
@@ -84,23 +131,38 @@ class LocalOAuth:
                 for c in self._clients.values()
             ],
             "tokens": {
-                token: {"subject": subject, "kind": kind, "expires_at": expires}
-                for token, (subject, kind, expires) in self._tokens.items()
+                token: {"subject": subject, "kind": kind, "expires_at": expires, "client_id": client_id}
+                for token, (subject, kind, expires, client_id) in self._tokens.items()
             },
         }
+        serialized = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        if self._state_key is not None:
+            nonce = secrets.token_bytes(12)
+            ciphertext = AESGCM(self._state_key).encrypt(nonce, serialized, _STATE_AAD)
+            serialized = json.dumps({
+                "version": 1,
+                "algorithm": "AES-256-GCM",
+                "nonce": base64.urlsafe_b64encode(nonce).decode("ascii"),
+                "ciphertext": base64.urlsafe_b64encode(ciphertext).decode("ascii"),
+            }, separators=(",", ":")).encode("utf-8")
         temporary = self.state_path.with_suffix(self.state_path.suffix + ".tmp")
-        temporary.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+        temporary.write_bytes(serialized)
+        os.chmod(temporary, 0o600)
         os.replace(temporary, self.state_path)
+        os.chmod(self.state_path, 0o600)
 
     def register(self, body: dict) -> dict:
         redirects = tuple(body.get("redirect_uris") or ())
         if not body.get("client_name") or not redirects:
             raise ValueError("client_name and redirect_uris are required")
-        if any(not u.startswith("https://") and not u.startswith("http://localhost") for u in redirects):
+        if any(not self._valid_redirect_uri(u) for u in redirects):
             raise ValueError("redirect_uris must use HTTPS or localhost")
         method = body.get("token_endpoint_auth_method", "none")
-        if method not in {"none", "client_secret_post", "client_secret_basic"}:
-            raise ValueError("unsupported token_endpoint_auth_method")
+        # Dynamic clients for browser and desktop MCP flows are public clients
+        # and must use PKCE. Returning an unverified client secret would be a
+        # misleading, weaker authentication mode.
+        if method != "none":
+            raise ValueError("only public PKCE clients (token_endpoint_auth_method=none) are supported")
         client_id = _b64(secrets.token_bytes(24))
         client = Client(client_id, str(body["client_name"]), redirects, method, int(time.time()))
         with self._lock:
@@ -114,20 +176,32 @@ class LocalOAuth:
             "response_types": ["code"],
             "token_endpoint_auth_method": method,
         }
-        if method != "none":
-            result["client_secret"] = _b64(secrets.token_bytes(32))
         return result
+
+    @staticmethod
+    def _valid_redirect_uri(value: str) -> bool:
+        parsed = urlsplit(value)
+        if parsed.scheme == "https" and parsed.netloc and not parsed.username and not parsed.password:
+            return True
+        return parsed.scheme == "http" and parsed.hostname == "localhost" and not parsed.username and not parsed.password
 
     def begin(self, client_id: str, redirect_uri: str, challenge: str, subject: str = "pending") -> str:
         with self._lock:
             client = self._clients.get(client_id)
             if not client or redirect_uri not in client.redirect_uris:
                 raise ValueError("unknown client or redirect URI")
-            if not challenge:
-                raise ValueError("PKCE code_challenge is required")
+            if not _PKCE_CHALLENGE.fullmatch(challenge):
+                raise ValueError("PKCE code_challenge must be a base64url S256 value")
             code = _b64(secrets.token_bytes(32))
-            self._codes[code] = AuthorizationCode(code, client_id, redirect_uri, challenge, subject, time.time() + self.ttl)
+            self._codes[code] = AuthorizationCode(code, client_id, redirect_uri, challenge, subject, time.time() + self.ttl, "")
             return code
+
+    def set_state(self, code: str, state: str) -> None:
+        with self._lock:
+            item = self._codes.get(code)
+            if not item or item.expires_at <= time.time() or item.used:
+                raise ValueError("invalid or expired authorization request")
+            item.state = state
 
     def complete(self, code: str, subject: str) -> None:
         """Complete a pending browser handoff before releasing its code."""
@@ -142,13 +216,15 @@ class LocalOAuth:
             item = self._codes.get(code)
             if not item or item.used or item.expires_at <= time.time():
                 raise ValueError("invalid or expired authorization code")
+            if not _PKCE_VERIFIER.fullmatch(verifier):
+                raise ValueError("invalid PKCE verifier")
             if item.client_id != client_id or item.redirect_uri != redirect_uri or _pkce(verifier) != item.code_challenge:
                 raise ValueError("client, redirect URI, or PKCE verifier mismatch")
             item.used = True
             access = _b64(secrets.token_bytes(32))
             refresh = _b64(secrets.token_bytes(32))
-            self._tokens[access] = (item.subject, "access", time.time() + 3600)
-            self._tokens[refresh] = (item.subject, "refresh", time.time() + 2592000)
+            self._tokens[access] = (item.subject, "access", time.time() + 3600, item.client_id)
+            self._tokens[refresh] = (item.subject, "refresh", time.time() + 2592000, item.client_id)
             self._save_state()
             return {"access_token": access, "token_type": "Bearer", "expires_in": 3600, "refresh_token": refresh, "scope": "openid profile"}
 
@@ -159,19 +235,58 @@ class LocalOAuth:
                 return None
             return value[0]
 
+    def refresh(self, refresh_token: str, client_id: str | None = None) -> dict:
+        """Rotate a valid refresh token without extending client trust."""
+        with self._lock:
+            value = self._tokens.get(refresh_token)
+            if not value or value[1] != "refresh" or value[2] <= time.time():
+                raise ValueError("invalid or expired refresh token")
+            subject, _, _, bound_client = value
+            if client_id and bound_client and client_id != bound_client:
+                raise ValueError("refresh token is bound to another client")
+            self._tokens.pop(refresh_token, None)
+            access = _b64(secrets.token_bytes(32))
+            refresh = _b64(secrets.token_bytes(32))
+            bound_client = bound_client or client_id or ""
+            self._tokens[access] = (subject, "access", time.time() + 3600, bound_client)
+            self._tokens[refresh] = (subject, "refresh", time.time() + 2592000, bound_client)
+            self._save_state()
+            return {"access_token": access, "token_type": "Bearer", "expires_in": 3600,
+                    "refresh_token": refresh, "scope": "openid profile"}
+
     def authorize_page(self, client_id: str, redirect_uri: str, challenge: str, state: str) -> str:
-        code = self.begin(client_id, redirect_uri, challenge, subject="local-user")
-        finish = self.issuer + "/oauth/complete?code=" + code + "&state=" + state
-        browser_url = os.environ.get("GEMINI_NOVNC_PUBLIC_URL", "")
-        if browser_url:
-            parts = urlsplit(browser_url)
-            query = dict(parse_qsl(parts.query, keep_blank_values=True))
-            query["sid"] = code
-            browser_url = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+        # A public DCR registration is the only stable caller boundary this
+        # local authorization server has. Keep account registry ownership
+        # separate per registered client rather than collapsing every caller
+        # into a shared "local-user" identity.
+        code = self.begin(client_id, redirect_uri, challenge, subject="client:" + client_id)
+        self.set_state(code, state)
+        self._codes[code].account = "gemini-" + client_id[:12] + "-" + code[:10]
+        finish = self.issuer + "/oauth/complete?" + urlencode({"code": code, "state": state})
+        browser_url = ""
+        if self._handoff_url_factory:
+            # Keep zero-argument factories compatible with existing callers,
+            # while allowing the browser broker to bind the handoff to the
+            # initiating OAuth principal and account before it starts.
+            try:
+                accepts_owner = bool(inspect.signature(self._handoff_url_factory).parameters)
+            except (TypeError, ValueError):
+                accepts_owner = True
+            if accepts_owner:
+                token, browser_url = self._handoff_url_factory(
+                    self._codes[code].subject, self._codes[code].account or ""
+                )
+            else:
+                token, browser_url = self._handoff_url_factory()
+            self._codes[code].handoff_token = token
+        else:
+            # Compatibility for deployments which have not yet enabled the
+            # isolated broker.  This never puts the OAuth code in the URL.
+            browser_url = os.environ.get("GEMINI_NOVNC_PUBLIC_URL", "")
         browser_link = (
             "<a class='button secondary' target='_blank' rel='noopener' href='" + html.escape(browser_url, quote=True) + "'>Open Chromium login</a>"
             if browser_url else
-            "<div class='notice'>Chromium display is not published yet. Set <code>GEMINI_NOVNC_PUBLIC_URL</code> to your protected noVNC URL, or complete login in the container browser profile.</div>"
+            "<div class='notice'>The embedded Chromium viewer is not configured yet. Set <code>GEMINI_PUBLIC_URL</code> and <code>GEMINI_NOVNC_WS_URL</code>, or complete login in the container browser profile.</div>"
         )
         return """<!doctype html>
 <html><head><meta name='viewport' content='width=device-width,initial-scale=1'>
@@ -183,11 +298,20 @@ body{margin:0;background:#0b1020;color:#eef2ff;font:16px system-ui,sans-serif}.c
 """ + browser_link + "<a class='button' href='" + html.escape(finish, quote=True) + "'>Continue after login</a>" + """
 <p class='small'>This page never displays or transmits your Google cookies. The authorization link expires after a short time and can be used once.</p></main></body></html>"""
 
-    def completion_redirect(self, code: str, subject: str) -> str:
+    def completion_redirect(self, code: str, state: str, subject: str | None = None) -> str:
         with self._lock:
             item = self._codes.get(code)
             if not item:
                 raise ValueError("invalid authorization request")
-            self.complete(code, subject)
-            return item.redirect_uri + ("&" if "?" in item.redirect_uri else "?") + urlencode({"code": code})
+            if item.state != state:
+                raise ValueError("OAuth state mismatch")
+            if item.handoff_token and self._handoff_ready and not self._handoff_ready(item.handoff_token):
+                raise ValueError("Gemini login is not ready yet; finish the Chromium login and try again")
+            self.complete(code, subject or item.subject)
+            if item.handoff_token and self._handoff_consume:
+                self._handoff_consume(item.handoff_token, item.subject, item.account or ("gemini-" + item.code[:10]))
+            parsed = urlsplit(item.redirect_uri)
+            query = parse_qsl(parsed.query, keep_blank_values=True)
+            query.append(("code", code))
+            return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
 

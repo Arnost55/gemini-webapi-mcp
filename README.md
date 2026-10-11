@@ -34,13 +34,16 @@
 - **Docker and Docker Compose** deployment with persistent account volumes
 - **Public URL ready** through an external HTTPS reverse proxy or MCP tunnel
 - **Persistent Chromium session supervisor** with five-minute checks, reload recovery, and login-required status
-- **Isolated multi-account profiles** with explicit OAuth-subject mapping and no cross-account fallback
+- **One isolated Chromium browser per authorization** with its own profile, X display, VNC target, and expiring opaque capability
+- **Universal embedded login viewer** with a responsive RFB surface, desktop mouse/keyboard controls, mobile touch scrolling, cursor suppression, fullscreen, status, countdown, and cancellation
 - **Per-account scopes, maintenance mode, request limits, and safe status files**
-- **Secure browser handoff state** for one-time login URLs, explicit approval, expiry, and replay protection
+- **Secure browser handoff state** with five-minute expiry and capability removal after authorization completes
 - **Encrypted dynamic account registry** using AES-256-GCM; Base64 is only an encoding envelope
+- **Multi-worker registry safety** with advisory locking, reload-before-mutate, fsync, and atomic replacement
 - **Account lifecycle controls** for ready, disabled, and revoked profiles
 - **Local OAuth/DCR foundation** for ChatGPT MCP clients with PKCE
-- **Headless Debian browser display** using Xvfb and noVNC for GUI-free login
+- **Debian browser display** using Xvfb and internal websockify/RFB transport for GUI-free, per-connection login; the standard noVNC desktop UI is not exposed
+- **Crash recovery** for service-owned Chromium/Xvfb/fluxbox/VNC handoffs after restart
 
 ## Quick Start
 
@@ -59,8 +62,8 @@ Streamable HTTP also publishes local OAuth 2.1 metadata and supports dynamic
 client registration at `/oauth/register`. Public clients must use PKCE
 (`S256`); redirect URIs are validated and authorization codes are single-use.
 This authenticates ChatGPT to the MCP server. It is not Google OAuth: Gemini
-accounts are linked separately through the Chromium browser handoff, with one
-isolated profile and encrypted session per account.
+Web login happens separately in a short-lived, isolated Chromium desktop.
+The server does not expose or return browser cookies.
 
 The MCP exposes `gemini_list_accounts` and `gemini_select_account` for the
 connected-account workflow. ChatGPT owns the visual account screen; the MCP
@@ -73,10 +76,16 @@ browser, account, and gateway installation instructions. See
 [`docs/gateway.md`](docs/gateway.md) for OAuth boundaries, persistent sessions,
 multi-account isolation, scopes, and rate limits.
 
-The browser handoff state machine is available in
-`gemini_webapi_mcp.handoff`. It provides the security lifecycle for a gateway
-login page, but this repository does not yet ship a public web UI or claim that
-Google OAuth for Gemini Web is available.
+The browser handoff is served by the built-in OAuth authorization page when
+`GEMINI_PUBLIC_URL` and `GEMINI_NOVNC_WS_URL` are set. The link opens the
+custom `/auth/browser/viewer` surface, which connects to isolated Chromium
+through the internal RFB transport. It does not claim Google OAuth support for
+Gemini Web.
+
+The handoff creates an isolated login desktop. After login and OAuth state
+validation, that profile is promoted into a new owner-bound persistent account
+profile. The browser capability is removed, and future requests load cookies
+only from the selected account profile.
 
 ### Multi-account Gemini sessions
 
