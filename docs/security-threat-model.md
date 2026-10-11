@@ -26,16 +26,17 @@ accounts fail closed.
 - Authorization codes are one-time and short-lived.
 - PKCE challenges and verifiers are validated as S256 base64url values.
 - Redirect URIs are registered and restricted to HTTPS or exact localhost HTTP.
-- The noVNC `sid` is an opaque capability separate from the OAuth code.
+- The embedded viewer `sid` is an opaque capability separate from the OAuth code.
 - Each handoff has its own Chromium profile, display, VNC target, and token map.
 - Completion promotes only the profile associated with that authorization.
 - Expiry and completion terminate processes with bounded SIGTERM/SIGKILL waits,
   remove status data and token mappings, and delete unpromoted profiles.
 
-The noVNC listener is loopback-bound. Publish only the protected noVNC HTTP
-surface through TLS and a reverse proxy; never publish the VNC port itself.
-Treat the generated noVNC URL as a bearer capability and apply no-referrer
-headers at the proxy.
+The RFB/websockify listener is loopback-bound. Publish only the protected
+embedded viewer page and its WSS transport through TLS and a reverse proxy;
+never publish the VNC port or the standard noVNC desktop page. Treat the
+generated viewer URL as a bearer capability and apply no-referrer headers at
+the proxy.
 
 ## Persistence and release gate
 
@@ -57,7 +58,7 @@ recovered; POSIX cleanup signals a recorded process only when its environment
 contains the matching handoff token and profile marker. This avoids killing a
 reused PID belonging to another service. Windows recovery is conservative and
 does not signal persisted PIDs without equivalent ownership verification.
-Shutdown revokes active noVNC mappings and removes temporary profiles. A
+Shutdown revokes active RFB mappings and removes temporary profiles. A
 container restart cannot recover a live browser login; users must start a new
 handoff when the old desktop is gone.
 
