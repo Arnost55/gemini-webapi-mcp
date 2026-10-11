@@ -18,6 +18,19 @@ from typing import Literal
 SessionState = Literal["unknown", "ready", "login_required", "error", "stopped"]
 
 
+def parse_env_bool(name: str, default: bool = False) -> bool:
+    """Parse a boolean environment variable without silently accepting typos."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be one of true/false, 1/0, yes/no, or on/off")
+
+
 @dataclass
 class SessionStatus:
     state: SessionState = "unknown"
@@ -95,6 +108,9 @@ class GeminiSessionManager:
         self.profile_dir = Path(profile_dir)
         self.check_interval = check_interval
         self.headless = os.environ.get("GEMINI_HEADLESS", "1") != "0" if headless is None else headless
+        # Playwright defaults this option to false. Keep that default for
+        # existing deployments and let hardened container deployments opt in.
+        self.chromium_sandbox = parse_env_bool("GEMINI_CHROMIUM_SANDBOX", default=False)
         self.login_url = login_url
         self.browser_executable = os.environ.get("GEMINI_BROWSER_EXECUTABLE", "").strip() or None
         configured_channel = os.environ.get("GEMINI_BROWSER_CHANNEL")
@@ -113,6 +129,32 @@ class GeminiSessionManager:
         self._context = None
         self._page = None
 
+    def browser_launch_options(self) -> dict[str, object]:
+        """Build the single persistent-browser launch configuration.
+
+        Playwright adds its control transport, including
+        ``--remote-debugging-pipe``. Keep that transport under Playwright's
+        control instead of supplying or removing it in application flags.
+        """
+        options: dict[str, object] = {
+            "user_data_dir": str(self.profile_dir),
+            "headless": self.headless,
+            "chromium_sandbox": self.chromium_sandbox,
+            "viewport": {"width": 1440, "height": 900},
+            "args": [
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--window-size=1440,900",
+            ],
+        }
+        if self.browser_channel:
+            options["channel"] = self.browser_channel
+        if self.browser_executable:
+            options["executable_path"] = self.browser_executable
+        return options
+
     async def start(self) -> SessionStatus:
         try:
             from playwright.async_api import async_playwright
@@ -120,21 +162,7 @@ class GeminiSessionManager:
             raise RuntimeError("Install the browser extra and Chromium: uv sync --extra browser && uv run playwright install chromium") from exc
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         self._playwright = await async_playwright().start()
-        launch_options = dict(
-            user_data_dir=str(self.profile_dir), headless=self.headless,
-            viewport={"width": 1440, "height": 900},
-            args=[
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--window-size=1440,900",
-            ],
-        )
-        if self.browser_channel:
-            launch_options["channel"] = self.browser_channel
-        if self.browser_executable:
-            launch_options["executable_path"] = self.browser_executable
+        launch_options = self.browser_launch_options()
         try:
             self._context = await self._playwright.chromium.launch_persistent_context(
                 **launch_options,
@@ -142,9 +170,10 @@ class GeminiSessionManager:
         except Exception as exc:
             await self.stop()
             raise RuntimeError(
-                "The configured browser could not start with its sandbox enabled. "
+                "The configured browser could not start with "
+                f"GEMINI_CHROMIUM_SANDBOX={str(self.chromium_sandbox).lower()}. "
                 "Install Google Chrome Stable or set GEMINI_BROWSER_EXECUTABLE to a supported browser; "
-                "do not add --no-sandbox."
+                "do not add --no-sandbox when sandboxing is enabled."
             ) from exc
         self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
         return await self.check_now()

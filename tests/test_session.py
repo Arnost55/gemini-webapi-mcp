@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from gemini_webapi_mcp.session import AccountMapping, GeminiSessionManager, SessionStatus, classify_gemini_page
+from gemini_webapi_mcp.session import AccountMapping, GeminiSessionManager, SessionStatus, classify_gemini_page, parse_env_bool
 from gemini_webapi_mcp.accounts import AccountRegistry
 from gemini_webapi_mcp.handoff import HandoffManager
 
@@ -39,11 +39,53 @@ def test_status_contains_presence_only():
     assert "cookie" not in repr(data).lower()
 
 
-def test_manager_defaults_to_five_minutes(tmp_path):
+def test_manager_defaults_to_five_minutes(monkeypatch, tmp_path):
+    monkeypatch.delenv("GEMINI_CHROMIUM_SANDBOX", raising=False)
     manager = GeminiSessionManager(tmp_path)
     assert manager.check_interval == 300
     assert manager.headless is True
     assert manager.browser_channel == "chrome"
+    assert manager.chromium_sandbox is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on"])
+def test_parse_env_bool_true(monkeypatch, value):
+    monkeypatch.setenv("GEMINI_CHROMIUM_SANDBOX", value)
+    assert parse_env_bool("GEMINI_CHROMIUM_SANDBOX") is True
+
+
+@pytest.mark.parametrize("value", ["0", "false", "FALSE", "no", "off"])
+def test_parse_env_bool_false(monkeypatch, value):
+    monkeypatch.setenv("GEMINI_CHROMIUM_SANDBOX", value)
+    assert parse_env_bool("GEMINI_CHROMIUM_SANDBOX", default=True) is False
+
+
+def test_parse_env_bool_rejects_invalid_value(monkeypatch):
+    monkeypatch.setenv("GEMINI_CHROMIUM_SANDBOX", "sometimes")
+    with pytest.raises(ValueError):
+        GeminiSessionManager("/tmp/profile")
+
+
+def test_sandbox_enabled_launch_options(monkeypatch, tmp_path):
+    monkeypatch.setenv("GEMINI_CHROMIUM_SANDBOX", "true")
+    options = GeminiSessionManager(tmp_path).browser_launch_options()
+    assert options["chromium_sandbox"] is True
+    assert "--no-sandbox" not in options["args"]
+
+
+def test_sandbox_disabled_launch_options_are_backward_compatible(monkeypatch, tmp_path):
+    monkeypatch.setenv("GEMINI_CHROMIUM_SANDBOX", "false")
+    options = GeminiSessionManager(tmp_path).browser_launch_options()
+    assert options["chromium_sandbox"] is False
+    assert "--no-sandbox" not in options["args"]
+
+
+def test_explicit_browser_executable_preserves_sandbox_setting(monkeypatch, tmp_path):
+    monkeypatch.setenv("GEMINI_BROWSER_EXECUTABLE", "/usr/bin/google-chrome")
+    monkeypatch.setenv("GEMINI_CHROMIUM_SANDBOX", "true")
+    options = GeminiSessionManager(tmp_path).browser_launch_options()
+    assert options["executable_path"] == "/usr/bin/google-chrome"
+    assert options["chromium_sandbox"] is True
 
 
 def test_explicit_browser_executable_disables_default_channel(monkeypatch, tmp_path):
