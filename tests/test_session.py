@@ -15,6 +15,11 @@ def test_classifies_google_login_as_required():
     assert classify_gemini_page("https://accounts.google.com/ServiceLogin", "") == "login_required"
 
 
+def test_classifies_google_consent_page_on_gemini_url_as_required():
+    body = "Before you continue to Google We use cookies and data Sign in"
+    assert classify_gemini_page("https://gemini.google.com/app", body) == "login_required"
+
+
 def test_status_contains_presence_only():
     status = SessionStatus(has_psid=True)
     data = status.safe_dict()

@@ -65,7 +65,15 @@ def classify_gemini_page(url: str, body_text: str = "") -> SessionState:
     lowered_body = body_text.lower()
     if any(marker in lowered_url for marker in ("/servicelogin", "/signin", "accounts.google.com")):
         return "login_required"
-    if "are you signed in" in lowered_body or "sign in to continue" in lowered_body:
+    if any(
+        marker in lowered_body
+        for marker in (
+            "are you signed in",
+            "sign in to continue",
+            "before you continue to google",
+            "we use cookies and data",
+        )
+    ):
         return "login_required"
     if "gemini.google.com" in lowered_url:
         return "ready"
