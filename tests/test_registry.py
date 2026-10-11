@@ -1,8 +1,16 @@
 import json
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing
 
 import pytest
 
 from gemini_webapi_mcp.registry import DynamicAccountRegistry, generate_key
+
+
+def _register_from_worker(args):
+    path, key, subject, account = args
+    DynamicAccountRegistry(path, key).register(subject=subject, account=account)
+    return account
 
 
 def test_registry_encrypts_and_reloads(tmp_path):
@@ -49,3 +57,13 @@ def test_registry_selection_survives_reload(tmp_path):
     registry.select("user", "two")
     restarted = DynamicAccountRegistry(path, key)
     assert restarted.selected("user")["account"] == "two"
+
+
+def test_registry_concurrent_workers_preserve_all_accounts(tmp_path):
+    path = tmp_path / "registry.json.enc"
+    key = generate_key()
+    jobs = [(str(path), key, f"subject-{index}", f"account-{index}") for index in range(6)]
+    with ProcessPoolExecutor(max_workers=6, mp_context=multiprocessing.get_context("spawn")) as pool:
+        assert sorted(pool.map(_register_from_worker, jobs)) == [f"account-{index}" for index in range(6)]
+    accounts = DynamicAccountRegistry(path, key).list_safe()
+    assert {item["account"] for item in accounts} == {f"account-{index}" for index in range(6)}
