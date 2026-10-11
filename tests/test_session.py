@@ -20,6 +20,18 @@ def test_classifies_google_consent_page_on_gemini_url_as_required():
     assert classify_gemini_page("https://gemini.google.com/app", body) == "login_required"
 
 
+def test_classifies_google_automation_rejection_as_error():
+    body = "Couldn't sign you in This browser or app may not be secure"
+    assert classify_gemini_page("https://accounts.google.com/v3/signin/rejected", body) == "error"
+
+
+def test_rejects_ambiguous_browser_configuration(monkeypatch, tmp_path):
+    monkeypatch.setenv("GEMINI_BROWSER_CHANNEL", "chrome")
+    monkeypatch.setenv("GEMINI_BROWSER_EXECUTABLE", "/usr/bin/google-chrome")
+    with pytest.raises(ValueError):
+        GeminiSessionManager(tmp_path)
+
+
 def test_status_contains_presence_only():
     status = SessionStatus(has_psid=True)
     data = status.safe_dict()

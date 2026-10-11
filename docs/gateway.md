@@ -86,11 +86,11 @@ uv run gemini-web-session --profile-dir /var/lib/gemini-mcp/chromium --headed --
 uv run gemini-web-session --profile-dir /var/lib/gemini-mcp/chromium
 ```
 
-Each check loads Gemini, classifies login redirects, reloads once when the
-session appears invalid, and then records `login_required` if the retry still
-needs login. A status of `error` means the browser check failed; it does not
-include exception text that could contain secrets. The Chromium profile must
-be readable only by the service account.
+Each check loads Gemini and classifies the result. A login redirect records
+`login_required`; reloading a page cannot refresh Google credentials. A status
+of `error` means the browser check failed, including Google's automated-browser
+rejection, and does not include exception text that could contain secrets. The
+Chromium profile must be readable only by the service account.
 
 The gateway can also use the account registry for scopes, maintenance mode,
 per-account request limits, and safe status files. A subject mapped to several
@@ -146,6 +146,31 @@ are deleted.
 This is a browser handoff, not Google OAuth. A normal OAuth redirect can
 authenticate the MCP caller to the gateway, but it does not transfer Gemini
 Web cookies into a server-side browser profile.
+
+### Google “browser may not be secure” rejection
+
+Google can reject the isolated Playwright Chromium login before Gemini issues
+cookies. Google documents that it may block browsers controlled through
+software automation or embedded in another application. This is a Google-side
+policy decision, not a missing MCP OAuth setting. The viewer reports the
+failure as an error instead of treating the `/app` URL as a successful login.
+
+If the server has a supported installed browser, configure exactly one of:
+
+```text
+GEMINI_BROWSER_CHANNEL=chrome
+GEMINI_BROWSER_CHANNEL=msedge
+GEMINI_BROWSER_EXECUTABLE=/usr/bin/google-chrome
+```
+
+The channel and executable settings are alternatives. The container image
+ships Playwright Chromium, so a branded browser must be installed separately
+and made available to the container or host process. This option is a
+compatibility path, not an anti-automation bypass: the project does not patch
+`navigator.webdriver`, spoof user agents, or add Google security-evasion flags.
+If Google continues to reject the session, use an official Google API OAuth
+flow where applicable or a normal supported browser under the user's control;
+do not weaken the login boundary or copy cookies into URLs.
 
 After login, the callback validates OAuth state and one-time handoff readiness.
 The profile is registered as pending, promoted into a new account directory,

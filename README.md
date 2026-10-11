@@ -144,9 +144,25 @@ uv run gemini-web-session \
 ```
 
 The supervisor checks every five minutes by default. If Gemini redirects to
-login, it reloads once and records `login_required` if the session is still
-invalid. It does not claim to refresh Google credentials by simply reloading
-the page.
+login, it records `login_required`; reloading a page cannot refresh Google
+credentials. A Google browser rejection is recorded as `error` instead.
+
+Google may reject Playwright's bundled Chromium with “This browser or app may
+not be secure” because Google blocks sign-ins controlled by software
+automation. The server does not bypass that protection. On a host where a
+supported installed browser is available, select it explicitly with one of
+these settings (never both):
+
+```bash
+GEMINI_BROWSER_CHANNEL=chrome       # or msedge
+# GEMINI_BROWSER_EXECUTABLE=/usr/bin/google-chrome
+```
+
+This changes only which browser Playwright launches; it does not spoof browser
+identity or guarantee that Google will permit a remote/Xvfb session. If Google
+still rejects the sign-in, use an approved normal browser login flow or an
+official Google API OAuth integration. Do not add webdriver-removal flags or
+user-agent spoofing.
 
 ### 1. Log into Gemini
 

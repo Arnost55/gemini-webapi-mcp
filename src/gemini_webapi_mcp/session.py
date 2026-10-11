@@ -63,6 +63,15 @@ def classify_gemini_page(url: str, body_text: str = "") -> SessionState:
     """Classify a page without inspecting or returning cookie values."""
     lowered_url = url.lower()
     lowered_body = body_text.lower()
+    if any(
+        marker in lowered_body
+        for marker in (
+            "this browser or app may not be secure",
+            "couldn’t sign you in",
+            "couldn't sign you in",
+        )
+    ):
+        return "error"
     if any(marker in lowered_url for marker in ("/servicelogin", "/signin", "accounts.google.com")):
         return "login_required"
     if any(
@@ -87,6 +96,10 @@ class GeminiSessionManager:
         self.check_interval = check_interval
         self.headless = os.environ.get("GEMINI_HEADLESS", "1") != "0" if headless is None else headless
         self.login_url = login_url
+        self.browser_channel = os.environ.get("GEMINI_BROWSER_CHANNEL", "").strip() or None
+        self.browser_executable = os.environ.get("GEMINI_BROWSER_EXECUTABLE", "").strip() or None
+        if self.browser_channel and self.browser_executable:
+            raise ValueError("set only one of GEMINI_BROWSER_CHANNEL or GEMINI_BROWSER_EXECUTABLE")
         self.status_info = SessionStatus()
         self._playwright = None
         self._context = None
@@ -99,7 +112,7 @@ class GeminiSessionManager:
             raise RuntimeError("Install the browser extra and Chromium: uv sync --extra browser && uv run playwright install chromium") from exc
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         self._playwright = await async_playwright().start()
-        self._context = await self._playwright.chromium.launch_persistent_context(
+        launch_options = dict(
             user_data_dir=str(self.profile_dir), headless=self.headless,
             viewport={"width": 1440, "height": 900},
             args=[
@@ -109,6 +122,13 @@ class GeminiSessionManager:
                 "--no-default-browser-check",
                 "--window-size=1440,900",
             ],
+        )
+        if self.browser_channel:
+            launch_options["channel"] = self.browser_channel
+        if self.browser_executable:
+            launch_options["executable_path"] = self.browser_executable
+        self._context = await self._playwright.chromium.launch_persistent_context(
+            **launch_options,
         )
         self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
         return await self.check_now()
