@@ -34,13 +34,31 @@ def test_handoffs_get_separate_profiles_displays_and_vnc_targets(tmp_path: Path)
     assert any("xdpyinfo" in part for command, _ in commands for part in command)
     assert any("fluxbox" in part for command, _ in commands for part in command)
     assert not any("fbsetbg" in part for command, _ in commands for part in command)
-    assert "session.screen0.toolbar.visible: false" in (tmp_path / "fluxboxrc").read_text(encoding="utf-8")
+    fluxbox_config = (tmp_path / "fluxboxrc").read_text(encoding="utf-8")
+    assert "session.screen0.toolbar.visible: false" in fluxbox_config
+    assert "session.screen0.rootCommand: /bin/true" in fluxbox_config
     url = broker.browser_url(first)
     assert "sid=" + first.token in url
     assert "path=websockify%3Ftoken%3D" in url
     tokens = (tmp_path / "novnc-tokens").read_text(encoding="utf-8").splitlines()
     assert f"{first.token}: 127.0.0.1:{first.vnc_port}" in tokens
     assert f"{second.token}: 127.0.0.1:{second.vnc_port}" in tokens
+
+
+def test_handoff_replaces_persisted_unsafe_fluxbox_config(tmp_path: Path):
+    unsafe_config = tmp_path / "fluxboxrc"
+    unsafe_config.write_text(
+        "session.screen0.rootCommand: fbsetbg /old/wallpaper\n",
+        encoding="utf-8",
+    )
+
+    broker = BrowserHandoffBroker(tmp_path, runner=lambda *args, **kwargs: FakeProcess())
+    broker.create()
+
+    config = unsafe_config.read_text(encoding="utf-8")
+    assert "fbsetbg" not in config
+    assert "xmessage" not in config
+    assert "session.screen0.rootCommand: /bin/true" in config
 
 
 def test_handoff_ready_state_never_reads_cookie_values(tmp_path: Path):

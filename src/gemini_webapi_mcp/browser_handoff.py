@@ -176,16 +176,17 @@ class BrowserHandoffBroker:
         """Create a display-only window-manager config with no desktop UI."""
         path = self.root / "fluxboxrc"
         self.root.mkdir(parents=True, exist_ok=True)
-        if not path.exists():
-            path.write_text(
-                "session.screen0.toolbar.visible: false\n"
-                "session.screen0.toolbar.height: 0\n"
-                "session.screen0.rootCommand:\n"
-                "session.screen0.workspaces: 1\n"
-                "session.screen0.focusModel: ClickToFocus\n",
-                encoding="utf-8",
-            )
-            os.chmod(path, 0o600)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(
+            "session.screen0.toolbar.visible: false\n"
+            "session.screen0.toolbar.height: 0\n"
+            "session.screen0.rootCommand: /bin/true\n"
+            "session.screen0.workspaces: 1\n"
+            "session.screen0.focusModel: ClickToFocus\n",
+            encoding="utf-8",
+        )
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
         return path
 
     def create(self, owner_subject: str = "", account: str = "") -> BrowserHandoff:
