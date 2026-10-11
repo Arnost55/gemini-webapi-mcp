@@ -119,15 +119,19 @@ class GeminiSessionManager:
         try:
             await self._page.goto(self.login_url, wait_until="domcontentloaded", timeout=30_000)
             state = await self._classify()
-            if state == "login_required":
-                await self._page.reload(wait_until="domcontentloaded", timeout=30_000)
-                state = await self._classify()
             cookies = await self._context.cookies("https://gemini.google.com")
             names = {cookie["name"] for cookie in cookies}
+            has_psid = any(name.endswith("PSID") for name in names)
+            # A Gemini URL alone is not proof of authentication. In
+            # particular, Google can render its consent screen at /app and a
+            # transient DOM read after a reload can contain no login text.
+            # Require the server-side session cookie before publishing ready.
+            if state == "ready" and not has_psid:
+                state = "login_required"
             now = datetime.now(timezone.utc).isoformat()
             self.status_info.state = state
             self.status_info.checked_at = now
-            self.status_info.has_psid = "__Secure-1PSID" in names
+            self.status_info.has_psid = has_psid
             self.status_info.has_psidts = "__Secure-1PSIDTS" in names
             self.status_info.error = None
             if state == "ready":
