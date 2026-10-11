@@ -22,11 +22,14 @@ services:
       GEMINI_NOVNC_PUBLIC_URL: https://vnc.gemini.proxmoxserver.dev/vnc.html
       GEMINI_NOVNC_PORT: 6080
       # Use the installed Google Chrome Stable build for the headed login handoff.
-      # Keep the Chrome sandbox enabled; do not add --no-sandbox.
+      # Recommended hardened deployment. The host must provide the matching
+      # seccomp profile configured below.
       GEMINI_BROWSER_CHANNEL: chrome
+      GEMINI_CHROMIUM_SANDBOX: "true"
       GEMINI_HEADLESS: "0"
     security_opt:
       - no-new-privileges:true
+      - seccomp:/opt/gemini-mcp/chrome-seccomp.json
     cap_drop:
       - ALL
 volumes:

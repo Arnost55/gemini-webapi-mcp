@@ -156,6 +156,7 @@ these settings (never both):
 ```bash
 GEMINI_BROWSER_CHANNEL=chrome       # or msedge
 # GEMINI_BROWSER_EXECUTABLE=/usr/bin/google-chrome
+GEMINI_CHROMIUM_SANDBOX=false       # true only with the reviewed host seccomp profile
 ```
 
 The included Docker image installs Google Chrome Stable and uses the `chrome`
@@ -164,11 +165,90 @@ you set `GEMINI_BROWSER_CHANNEL` or `GEMINI_BROWSER_EXECUTABLE`. Rebuild and
 recreate an existing container after changing the image; an environment
 variable cannot install Chrome into an old image.
 
-The login browser is intentionally launched with its sandbox enabled. The
-project does not add `--no-sandbox`: Google may reject that unsupported flag,
-and adding it would weaken the isolated login environment. If Chrome cannot
-start without that flag, fix the container's sandbox/runtime permissions or
-install a supported Chrome build rather than disabling the sandbox.
+`GEMINI_CHROMIUM_SANDBOX` is parsed as a strict boolean and defaults to
+`false` for backward compatibility. When set to `true`, the value is passed to
+Playwright's `chromium_sandbox` option for the persistent Chrome launch. The
+application never adds `--no-sandbox`; Playwright also retains its
+`--remote-debugging-pipe` control transport.
+
+For a hardened Docker deployment, run as the non-root `gemini` user with
+`GEMINI_CHROMIUM_SANDBOX=true`, `no-new-privileges:true`, `cap_drop: ALL`, and
+the pinned profile in `deploy/chrome-seccomp.json` installed on the Docker
+host as `/opt/gemini-mcp/chrome-seccomp.json`. Docker reads seccomp profiles
+from the host filesystem; mounting the JSON into the application container
+does not configure Docker's seccomp filter. The profile is based on the
+official Microsoft Playwright profile from v1.63.0 and permits the user
+namespace syscalls required by Chromium's sandbox. Its SHA-256 is
+`CC3E61CABDA6BBC1E53E54D27BA4D55A9D3BE829B6DD1A596F4A7B31B1CC7849`.
+Install and verify it on the Docker host before starting the container:
+
+```bash
+sudo install -D -m 0644 deploy/chrome-seccomp.json /opt/gemini-mcp/chrome-seccomp.json
+sha256sum /opt/gemini-mcp/chrome-seccomp.json
+```
+
+The hash must match the value above. Review and replace this profile as part
+of a deliberate Playwright upgrade; do not silently substitute an unreviewed
+profile. Do not use
+`seccomp=unconfined` or `--privileged`.
+
+The repository Compose example enables this mode. For the existing production
+container, use `--security-opt seccomp=/opt/gemini-mcp/chrome-seccomp.json` and
+`-e GEMINI_CHROMIUM_SANDBOX=true` only after verifying the profile is present
+on the Docker host and the container can start in the unprivileged Proxmox
+environment. If Chrome cannot start, roll back only the image and environment
+setting while preserving `gemini-state` and the registry key; do not delete or
+recreate either.
+
+Example production command (the key file and named volume are existing data):
+
+```bash
+docker pull ghcr.io/arnost55/gemini-webapi-mcp:latest
+docker rm -f gemini-mcp 2>/dev/null || true
+docker run -d \
+  --name gemini-mcp \
+  --restart unless-stopped \
+  --security-opt no-new-privileges:true \
+  --security-opt seccomp=/opt/gemini-mcp/chrome-seccomp.json \
+  --cap-drop ALL \
+  -p 127.0.0.1:8019:8000 \
+  -p 127.0.0.1:6080:6080 \
+  -v gemini-state:/var/lib/gemini-mcp \
+  -v /root/registry.key:/run/secrets/gemini_registry_key:ro \
+  -e GEMINI_REGISTRY_PATH=/var/lib/gemini-mcp/registry.json.enc \
+  -e GEMINI_REGISTRY_KEY_FILE=/run/secrets/gemini_registry_key \
+  -e GEMINI_OAUTH_STATE_KEY_FILE=/run/secrets/gemini_registry_key \
+  -e GEMINI_PROFILE_ROOT=/var/lib/gemini-mcp/accounts \
+  -e GEMINI_OAUTH_STATE_PATH=/var/lib/gemini-mcp/oauth-state.json \
+  -e GEMINI_HANDOFF_ROOT=/var/lib/gemini-mcp/handoffs \
+  -e GEMINI_PUBLIC_URL=https://gemini.proxmoxserver.dev \
+  -e GEMINI_NOVNC_WS_URL=wss://novnc.gemini.proxmoxserver.dev/websockify \
+  -e GEMINI_BROWSER_CHANNEL=chrome \
+  -e GEMINI_CHROMIUM_SANDBOX=true \
+  -e GEMINI_HEADLESS=0 \
+  ghcr.io/arnost55/gemini-webapi-mcp:latest
+```
+
+Verify the setting without exposing cookies or credentials:
+
+```bash
+docker inspect gemini-mcp --format '{{json .HostConfig.SecurityOpt}}'
+docker exec gemini-mcp sh -lc 'id && command -v google-chrome && google-chrome --version'
+docker logs --since 2m gemini-mcp
+```
+
+The logs should show a started session or a clear sandbox/runtime error; they
+must not contain cookie values. A sandbox-enabled browser launch has not been
+validated on this Windows development host because Docker-in-LXC runtime
+behavior requires the target Proxmox host. Google’s sign-in decision is a
+separate compatibility question and is not guaranteed by enabling the sandbox.
+
+Safe upgrade and rollback: first copy the pinned profile to the host and keep
+the existing registry key and `gemini-state` volume. Pull the new image, stop
+and remove only the `gemini-mcp` container, then run the command above. To
+roll back, run the same command with the previous image tag and
+`GEMINI_CHROMIUM_SANDBOX=false` if the host profile cannot support the sandbox.
+Never run `docker volume rm gemini-state` and never replace the registry key.
 
 This changes only which browser Playwright launches; it does not spoof browser
 identity or guarantee that Google will permit a remote/Xvfb session. If Google
