@@ -158,6 +158,11 @@ GEMINI_BROWSER_CHANNEL=chrome       # or msedge
 # GEMINI_BROWSER_EXECUTABLE=/usr/bin/google-chrome
 ```
 
+The included Docker image installs Google Chrome Stable and uses
+`GEMINI_BROWSER_CHANNEL=chrome` by default. Rebuild the image after changing
+the Dockerfile; changing the environment variable alone cannot install a
+browser into an existing image.
+
 This changes only which browser Playwright launches; it does not spoof browser
 identity or guarantee that Google will permit a remote/Xvfb session. If Google
 still rejects the sign-in, use an approved normal browser login flow or an

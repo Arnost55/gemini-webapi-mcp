@@ -165,6 +165,11 @@ docker compose up -d
 docker compose logs -f gemini-mcp
 ```
 
+The image installs Google Chrome Stable and launches it by default through the
+`chrome` Playwright channel. If you set `GEMINI_BROWSER_CHANNEL=chrome` on an
+older image, rebuild and recreate the container; an environment variable does
+not download Chrome into an existing image.
+
 The container listens on port 8000, while Compose binds it to loopback.
 Chromium profiles and status data persist in the `gemini-state` volume. Keep
 `registry.key` outside Git. Compose mounts it as a secret and stores the encrypted registry in the persistent `gemini-state` volume.
