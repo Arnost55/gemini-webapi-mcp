@@ -202,9 +202,13 @@ class BrowserHandoffBroker:
                 "until xdpyinfo -display \"$1\" >/dev/null 2>&1; do sleep 0.1; done; "
                 "shift; exec \"$@\"",
             ]
+            # Do not start a desktop window manager here.  Fluxbox's Debian
+            # startup helpers can invoke fbsetbg, which opens an xmessage
+            # dialog on the streamed display and hides Chromium behind it.
+            # Chromium can run directly on the isolated Xvfb display, and the
+            # viewer should expose only that browser surface.
             commands = [
                 ["Xvfb", f":{display}", "-screen", "0", os.environ.get("GEMINI_BROWSER_SCREEN", "1440x900x24"), "-nolisten", "tcp"],
-                [*wait_for_display, "handoff-fluxbox", f":{display}", "fluxbox"],
                 vnc_command,
                 [*wait_for_display, "handoff-browser", f":{display}", "uv", "run", "gemini-web-session", "--profile-dir", str(profile), "--headed", "--status-file", str(status_file)],
             ]
