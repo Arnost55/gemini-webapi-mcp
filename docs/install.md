@@ -114,6 +114,12 @@ encrypted JSON fields; it is not encryption. The encrypted file contains
 account metadata and profile names, never cookies or credentials. Back up the
 encrypted registry together with the browser profile volume, and use a
 different key per environment.
+
+The registry also creates `registry.json.enc.lock` beside the encrypted file.
+Keep both on the same persistent volume. Multiple workers can register and
+select accounts safely because each update locks and reloads the current file
+before an fsync plus atomic replacement. Do not place the registry on storage
+that does not provide reliable advisory file locks.
 ## Account policy
 
 Keep the policy outside Git, for example at
@@ -197,6 +203,13 @@ token. It is mapped only to the dedicated temporary VNC target for that login,
 not a shared desktop. Completion, expiry, or container restart removes the live
 desktop capability. Keep noVNC behind HTTPS; the token is a short-lived
 capability and must never be copied to tickets, logs, or chat messages.
+
+The container writes token-scoped handoff manifests under the persistent state
+volume. On Debian/POSIX restart, stale manifests are cleaned only when the
+recorded processes carry the exact service markers; unrelated desktop
+processes are not terminated. Windows cleanup is conservative and leaves
+ambiguous persisted processes untouched. A restart invalidates the old live
+desktop, so begin a new login handoff if the browser page is no longer ready.
 
 ### Compose with the published image
 

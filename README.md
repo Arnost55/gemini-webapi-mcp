@@ -38,9 +38,11 @@
 - **Per-account scopes, maintenance mode, request limits, and safe status files**
 - **Secure browser handoff state** with five-minute expiry and capability removal after authorization completes
 - **Encrypted dynamic account registry** using AES-256-GCM; Base64 is only an encoding envelope
+- **Multi-worker registry safety** with advisory locking, reload-before-mutate, fsync, and atomic replacement
 - **Account lifecycle controls** for ready, disabled, and revoked profiles
 - **Local OAuth/DCR foundation** for ChatGPT MCP clients with PKCE
 - **Debian browser display** using Xvfb and noVNC for GUI-free, per-connection login
+- **Crash recovery** for service-owned Chromium/Xvfb/fluxbox/VNC handoffs after restart
 
 ## Quick Start
 

@@ -43,9 +43,25 @@ OAuth state and account metadata use AES-256-GCM and atomic replacement. Keep
 keys, profiles, and state volumes persistent across container recreation and
 readable only by the service account. Base64 is encoding, not encryption.
 
-JSON persistence is safe against partial-file replacement, but is not a
-multi-worker coordination protocol. Run one application worker until
-inter-process locking or a shared storage layer is added. Key rotation requires
-a controlled migration. The implementation is not called production-ready
-until orphan cleanup, resource-limit enforcement, live proxy tests, and the
-full integration suite are complete.
+The encrypted account registry uses a separate sibling `.lock` file for
+cross-process advisory locking. Every mutation reloads the latest encrypted
+state while holding that lock, then writes a flushed temporary file and swaps
+it into place. This prevents lost updates and partial files across workers;
+the lock file itself contains no account data. The registry still requires a
+reliable local filesystem with advisory-lock support and is not a substitute
+for a distributed database.
+
+Browser handoffs persist a token-scoped manifest containing only process,
+profile, display, port, and expiry metadata. On startup, stale manifests are
+recovered; POSIX cleanup signals a recorded process only when its environment
+contains the matching handoff token and profile marker. This avoids killing a
+reused PID belonging to another service. Windows recovery is conservative and
+does not signal persisted PIDs without equivalent ownership verification.
+Shutdown revokes active noVNC mappings and removes temporary profiles. A
+container restart cannot recover a live browser login; users must start a new
+handoff when the old desktop is gone.
+
+The implementation is ready for code review after the automated checks, but
+live two-account Gemini execution, public reverse-proxy behavior, and Google
+session stability remain deployment checks rather than claims established by
+the unit suite.

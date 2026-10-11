@@ -97,6 +97,12 @@ per-account request limits, and safe status files. A subject mapped to several
 accounts must select one explicitly. Keep registry and status files outside
 the repository and readable only by the service account.
 
+The registry is safe for multiple application workers on the same local
+filesystem: mutations take the sibling `.lock`, reload the current encrypted
+file, and commit with fsync plus atomic replacement. Keep the lock and
+registry on the same persistent volume. Network filesystems with unreliable
+advisory locking are unsupported.
+
 ## Browser handoff login
 
 When the gateway needs to connect a Google account without requiring a local
@@ -139,6 +145,13 @@ The profile is registered as pending, promoted into a new account directory,
 and marked ready only after the move succeeds. The handoff token and desktop
 are removed. Gemini execution resolves the OAuth subject and selected account
 for each client, with no process-wide cookie fallback.
+
+On service startup, abandoned handoff manifests are inspected. On Debian/POSIX
+hosts, only processes carrying the exact persisted token and profile markers
+may be signaled; unrelated Chromium, Xvfb, fluxbox, and VNC processes are left
+alone. Temporary profiles, status files, and expired capability mappings are
+removed after ownership is established. A live owner manifest is left for its
+current broker, so two workers cannot clean each other’s active desktop.
 
 Until an upstream identity provider is configured, ownership is separated by
 the dynamic client registration, not by a verified human identity. Do not use
