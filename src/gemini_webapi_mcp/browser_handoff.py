@@ -28,6 +28,8 @@ class BrowserHandoff:
     expires_at: float
     status_file: str
     processes: list[subprocess.Popen]
+    owner_subject: str = ""
+    account: str = ""
 
 
 class BrowserHandoffBroker:
@@ -73,6 +75,8 @@ class BrowserHandoffBroker:
             "display": session.display,
             "vnc_port": session.vnc_port,
             "expires_at": session.expires_at,
+            "owner_subject": session.owner_subject,
+            "account": session.account,
             "owner_pid": os.getpid(),
             "pids": pids if pids is not None else [process.pid for process in session.processes if getattr(process, "pid", None)],
         }
@@ -168,7 +172,7 @@ class BrowserHandoffBroker:
             number += 1
         return self.display_start + number, self.vnc_port_start + number
 
-    def create(self) -> BrowserHandoff:
+    def create(self, owner_subject: str = "", account: str = "") -> BrowserHandoff:
         """Start a browser desktop and return an unguessable, expiring token."""
         with self._lock:
             self.expire()
@@ -200,7 +204,7 @@ class BrowserHandoffBroker:
                 ["uv", "run", "gemini-web-session", "--profile-dir", str(profile), "--headed", "--status-file", str(status_file)],
             ]
             processes: list[subprocess.Popen] = []
-            session = BrowserHandoff(token, str(profile), display, vnc_port, time.time() + self.ttl_seconds, str(status_file), processes)
+            session = BrowserHandoff(token, str(profile), display, vnc_port, time.time() + self.ttl_seconds, str(status_file), processes, owner_subject, account)
             self._write_manifest(session, [])
             try:
                 for command in commands:
@@ -235,6 +239,26 @@ class BrowserHandoffBroker:
             except (OSError, ValueError):
                 return False
             return data.get("state") == "ready"
+
+    def status(self, token: str) -> dict[str, object]:
+        """Return safe handoff state without exposing profile or cookie data."""
+        with self._lock:
+            session = self._sessions.get(token)
+            if session is None or session.expires_at <= time.time():
+                return {"state": "expired", "ready": False, "expires_at": 0}
+            try:
+                data = json.loads(Path(session.status_file).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                data = {}
+            state = str(data.get("state", "starting"))
+            return {"state": state, "ready": state == "ready", "expires_at": session.expires_at}
+
+    def owner_for(self, token: str) -> str | None:
+        with self._lock:
+            session = self._sessions.get(token)
+            if session is None or session.expires_at <= time.time():
+                return None
+            return session.owner_subject
 
     def consume(self, token: str, promote_to: str | Path | None = None) -> None:
         with self._lock:

@@ -14,6 +14,7 @@ import time
 import os
 import json
 import re
+import inspect
 from pathlib import Path
 from dataclasses import dataclass
 from threading import RLock
@@ -84,7 +85,7 @@ class LocalOAuth:
 
     def __init__(self, issuer: str, ttl: int = 300, state_path: str | None = None,
                  state_key: str | bytes | None = None,
-                 handoff_url_factory: Callable[[], tuple[str, str]] | None = None,
+                 handoff_url_factory: Callable[..., tuple[str, str]] | None = None,
                  handoff_ready: Callable[[str], bool] | None = None,
                  handoff_consume: Callable[[str, str, str], None] | None = None):
         self.issuer = issuer.rstrip("/")
@@ -264,7 +265,19 @@ class LocalOAuth:
         finish = self.issuer + "/oauth/complete?" + urlencode({"code": code, "state": state})
         browser_url = ""
         if self._handoff_url_factory:
-            token, browser_url = self._handoff_url_factory()
+            # Keep zero-argument factories compatible with existing callers,
+            # while allowing the browser broker to bind the handoff to the
+            # initiating OAuth principal and account before it starts.
+            try:
+                accepts_owner = bool(inspect.signature(self._handoff_url_factory).parameters)
+            except (TypeError, ValueError):
+                accepts_owner = True
+            if accepts_owner:
+                token, browser_url = self._handoff_url_factory(
+                    self._codes[code].subject, self._codes[code].account or ""
+                )
+            else:
+                token, browser_url = self._handoff_url_factory()
             self._codes[code].handoff_token = token
         else:
             # Compatibility for deployments which have not yet enabled the
@@ -273,7 +286,7 @@ class LocalOAuth:
         browser_link = (
             "<a class='button secondary' target='_blank' rel='noopener' href='" + html.escape(browser_url, quote=True) + "'>Open Chromium login</a>"
             if browser_url else
-            "<div class='notice'>Chromium display is not published yet. Set <code>GEMINI_NOVNC_PUBLIC_URL</code> to your protected noVNC URL, or complete login in the container browser profile.</div>"
+            "<div class='notice'>The embedded Chromium viewer is not configured yet. Set <code>GEMINI_PUBLIC_URL</code> and <code>GEMINI_NOVNC_WS_URL</code>, or complete login in the container browser profile.</div>"
         )
         return """<!doctype html>
 <html><head><meta name='viewport' content='width=device-width,initial-scale=1'>
