@@ -94,6 +94,9 @@ def classify_gemini_page(url: str, body_text: str = "") -> SessionState:
             "sign in to continue",
             "before you continue to google",
             "we use cookies and data",
+            "choose an account",
+            "use another account",
+            "sign in",
         )
     ):
         return "login_required"
@@ -191,7 +194,11 @@ class GeminiSessionManager:
             # particular, Google can render its consent screen at /app and a
             # transient DOM read after a reload can contain no login text.
             # Require the server-side session cookie before publishing ready.
-            if state == "ready" and not has_psid:
+            if state != "error" and has_psid:
+                # Gemini may keep a generic sign-in label on an authenticated
+                # page. A server-side PSID is stronger evidence than that text.
+                state = "ready"
+            elif state == "ready" and not has_psid:
                 state = "login_required"
             now = datetime.now(timezone.utc).isoformat()
             self.status_info.state = state

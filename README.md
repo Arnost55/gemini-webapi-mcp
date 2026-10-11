@@ -44,6 +44,7 @@
 - **Local OAuth/DCR foundation** for ChatGPT MCP clients with PKCE
 - **Debian browser display** using Xvfb and internal websockify/RFB transport for GUI-free, per-connection login; the standard noVNC desktop UI is not exposed
 - **Crash recovery** for service-owned Chromium/Xvfb/fluxbox/VNC handoffs after restart
+- **Recovery health checks** and actionable browser-process diagnostics for failed embedded viewers
 
 ## Quick Start
 
@@ -75,6 +76,8 @@ See [`docs/install.md`](docs/install.md) for complete local, Debian/Proxmox,
 browser, account, and gateway installation instructions. See
 [`docs/gateway.md`](docs/gateway.md) for OAuth boundaries, persistent sessions,
 multi-account isolation, scopes, and rate limits.
+See [`docs/recovery-runbook.md`](docs/recovery-runbook.md) for the confirmed
+black-screen failure path, health checks, and safe rollback procedure.
 
 The browser handoff is served by the built-in OAuth authorization page when
 `GEMINI_PUBLIC_URL` and `GEMINI_NOVNC_WS_URL` are set. The link opens the

@@ -181,6 +181,11 @@ flag.
 The container listens on port 8000, while Compose binds it to loopback.
 Chromium profiles and status data persist in the `gemini-state` volume. Keep
 `registry.key` outside Git. Compose mounts it as a secret and stores the encrypted registry in the persistent `gemini-state` volume.
+The image exposes `GET /healthz` for reverse-proxy and container liveness
+checks. It verifies that the MCP HTTP process is serving; it does not claim
+that Chrome, Google login, or the WebSocket viewer is ready. See
+[`recovery-runbook.md`](recovery-runbook.md) when the viewer is black or the
+container appears healthy while login cannot proceed.
 
 ### Run the published GHCR image
 
@@ -191,22 +196,34 @@ docker run -d \
   --name gemini-mcp \
   --restart unless-stopped \
   --security-opt no-new-privileges:true \
+  --security-opt seccomp=/opt/gemini-mcp/chrome-seccomp.json \
   --cap-drop ALL \
-  -p 127.0.0.1:8000:8000 \
+  -p 127.0.0.1:8019:8000 \
   -v gemini-state:/var/lib/gemini-mcp \
   -v "$PWD/registry.key:/run/secrets/gemini_registry_key:ro" \
   -e GEMINI_REGISTRY_PATH=/var/lib/gemini-mcp/registry.json.enc \
   -e GEMINI_REGISTRY_KEY_FILE=/run/secrets/gemini_registry_key \
   -e GEMINI_OAUTH_STATE_KEY_FILE=/run/secrets/gemini_registry_key \
+  -e GEMINI_PROFILE_ROOT=/var/lib/gemini-mcp/accounts \
   -e GEMINI_PUBLIC_URL=https://gemini.proxmoxserver.dev \
   -e GEMINI_OAUTH_STATE_PATH=/var/lib/gemini-mcp/oauth-state.json \
   -e GEMINI_HANDOFF_ROOT=/var/lib/gemini-mcp/handoffs \
   -e GEMINI_BROWSER_CHANNEL=chrome \
+  -e GEMINI_CHROMIUM_SANDBOX=true \
   -e GEMINI_HEADLESS=0 \
-  -e GEMINI_NOVNC_WS_URL=wss://gemini.proxmoxserver.dev/websockify \
+  -e GEMINI_NOVNC_PUBLIC_URL=https://novnc.gemini.proxmoxserver.dev/vnc.html \
+  -e GEMINI_NOVNC_PORT=6080 \
+  -e GEMINI_NOVNC_WS_URL=wss://novnc.gemini.proxmoxserver.dev/websockify \
   -e GEMINI_VIEWER_FRAME_ANCESTORS="'self' https://chatgpt.com" \
   ghcr.io/arnost55/gemini-webapi-mcp:latest
 ```
+
+The host must have the reviewed profile at
+`/opt/gemini-mcp/chrome-seccomp.json`; Docker reads that file from the Docker
+host when it creates the container. If the unprivileged LXC cannot start the
+Chrome sandbox with this profile, use `GEMINI_CHROMIUM_SANDBOX=false` as a
+temporary rollback and investigate the host runtime separately. Do not use
+`seccomp=unconfined` or `--privileged` for production.
 
 Keep the same `gemini-state` volume across image updates and container
 recreation. It stores dynamic OAuth client registrations, OAuth tokens, the
@@ -243,7 +260,7 @@ services:
     image: ghcr.io/arnost55/gemini-webapi-mcp:latest
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:8019:8000"
     volumes:
       - gemini-state:/var/lib/gemini-mcp
       - ./registry.key:/run/secrets/gemini_registry_key:ro
@@ -255,12 +272,24 @@ services:
       GEMINI_OAUTH_STATE_PATH: /var/lib/gemini-mcp/oauth-state.json
       GEMINI_HANDOFF_ROOT: /var/lib/gemini-mcp/handoffs
       GEMINI_PUBLIC_URL: https://gemini.proxmoxserver.dev
-      GEMINI_NOVNC_WS_URL: wss://gemini.proxmoxserver.dev/websockify
+      GEMINI_BROWSER_CHANNEL: chrome
+      GEMINI_CHROMIUM_SANDBOX: "true"
+      GEMINI_HEADLESS: "0"
+      GEMINI_NOVNC_PUBLIC_URL: https://novnc.gemini.proxmoxserver.dev/vnc.html
+      GEMINI_NOVNC_PORT: "6080"
+      GEMINI_NOVNC_WS_URL: wss://novnc.gemini.proxmoxserver.dev/websockify
       GEMINI_VIEWER_FRAME_ANCESTORS: "'self' https://chatgpt.com"
     security_opt:
       - no-new-privileges:true
+      - seccomp:/opt/gemini-mcp/chrome-seccomp.json
     cap_drop:
       - ALL
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
 volumes:
   gemini-state:
@@ -276,6 +305,13 @@ docker compose logs -f gemini-mcp
 If the package is private, authenticate with a GitHub token that has
 `read:packages` before pulling the image. Keep the port bound to `127.0.0.1`
 when an HTTPS gateway or tunnel is handling public access.
+
+The host must have the reviewed profile at
+`/opt/gemini-mcp/chrome-seccomp.json`; Docker reads that file from the Docker
+host when it creates the container. If the unprivileged LXC cannot start the
+Chrome sandbox with this profile, set `GEMINI_CHROMIUM_SANDBOX=false` as a
+temporary rollback and investigate the host runtime separately. Do not use
+`seccomp=unconfined` or `--privileged` for production.
 
 ## Public HTTPS URL
 

@@ -496,6 +496,7 @@ class _AccountClientManager:
 @asynccontextmanager
 async def app_lifespan(server):
     manager = _AccountClientManager()
+    _handoff_broker.revoke_stale_tokens()
     try:
         yield {"account_clients": manager}
     finally:
@@ -625,6 +626,12 @@ def _oauth_subject(ctx: Context) -> str:
 async def oauth_resource_metadata(request: Request):
     issuer = _oauth.issuer
     return JSONResponse({"resource": issuer + "/mcp", "authorization_servers": [issuer], "scopes_supported": ["openid", "profile"]})
+
+
+@mcp.custom_route("/healthz", methods=["GET"])
+async def healthz(request: Request):
+    """Return a dependency-free liveness response for reverse proxies."""
+    return JSONResponse({"status": "ok"}, headers={"Cache-Control": "no-store"})
 
 
 @mcp.custom_route("/.well-known/oauth-protected-resource/mcp", methods=["GET"])

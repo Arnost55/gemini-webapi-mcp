@@ -62,6 +62,17 @@ class BrowserHandoffBroker:
         self._manifest_dir = self.root / "manifests"
         self.recover_orphans()
 
+    def revoke_stale_tokens(self) -> None:
+        """Revoke capabilities from a previous broker process.
+
+        This is intentionally called during application startup rather than
+        construction: importing the module must remain side-effect free for
+        CLI tools and worker processes.
+        """
+        with self._lock:
+            if self._token_file.exists():
+                self._write_tokens()
+
     def _manifest_path(self, token: str) -> Path:
         return self._manifest_dir / f"{token}.json"
 
@@ -142,7 +153,11 @@ class BrowserHandoffBroker:
     @staticmethod
     def _terminate_pid(pid: int) -> None:
         try:
-            os.killpg(pid, signal.SIGTERM)
+            killpg = getattr(os, "killpg", None)
+            if killpg is None:
+                os.kill(pid, signal.SIGTERM)
+            else:
+                killpg(pid, signal.SIGTERM)
         except (OSError, ProcessLookupError):
             try:
                 os.kill(pid, signal.SIGTERM)
@@ -264,7 +279,16 @@ class BrowserHandoffBroker:
                 data = json.loads(Path(session.status_file).read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 return False
-            return data.get("state") == "ready"
+            return data.get("state") == "ready" and all(
+                not hasattr(process, "poll") or process.poll() is None
+                for process in session.processes
+            )
+
+    @staticmethod
+    def _process_state(process: subprocess.Popen) -> str:
+        if not hasattr(process, "poll"):
+            return "unknown"
+        return "running" if process.poll() is None else "exited"
 
     def status(self, token: str) -> dict[str, object]:
         """Return safe handoff state without exposing profile or cookie data."""
@@ -277,7 +301,22 @@ class BrowserHandoffBroker:
             except (OSError, ValueError):
                 data = {}
             state = str(data.get("state", "starting"))
-            return {"state": state, "ready": state == "ready", "expires_at": session.expires_at}
+            components = {
+                name: self._process_state(process)
+                for name, process in zip(("xvfb", "vnc", "fluxbox", "chromium"), session.processes)
+            }
+            if state not in {"ready", "error", "stopped"} and "exited" in components.values():
+                state = "error"
+                data.setdefault("error", "browser_process_exited")
+            result = {
+                "state": state,
+                "ready": state == "ready" and "exited" not in components.values(),
+                "expires_at": session.expires_at,
+                "components": components,
+            }
+            if data.get("error"):
+                result["error"] = str(data["error"])
+            return result
 
     def owner_for(self, token: str) -> str | None:
         with self._lock:
@@ -344,25 +383,42 @@ class BrowserHandoffBroker:
                 pass
             return
         try:
-            os.killpg(process.pid, signal.SIGTERM)
+            killpg = getattr(os, "killpg", None)
+            if killpg is None:
+                process.terminate()
+            else:
+                killpg(process.pid, signal.SIGTERM)
         except (OSError, ProcessLookupError):
             try:
                 process.terminate()
             except OSError:
                 return
+        wait = getattr(process, "wait", None)
+        if wait is None:
+            return
         try:
-            process.wait(timeout=3)
-        except (AttributeError, subprocess.TimeoutExpired):
+            wait(timeout=3)
+        except subprocess.TimeoutExpired:
             try:
-                os.killpg(process.pid, signal.SIGKILL)
+                killpg = getattr(os, "killpg", None)
+                if killpg is None:
+                    kill = getattr(process, "kill", None)
+                    if kill is None:
+                        return
+                    kill()
+                else:
+                    killpg(process.pid, signal.SIGKILL)
             except (OSError, ProcessLookupError):
                 try:
-                    process.kill()
+                    kill = getattr(process, "kill", None)
+                    if kill is None:
+                        return
+                    kill()
                 except OSError:
                     pass
             try:
-                process.wait(timeout=3)
-            except (AttributeError, OSError, subprocess.TimeoutExpired):
+                wait(timeout=3)
+            except (OSError, subprocess.TimeoutExpired):
                 # The child may be supervised by an external init process;
                 # never block an OAuth request indefinitely on cleanup.
                 pass
