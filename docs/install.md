@@ -71,7 +71,8 @@ that origin to it.
 
 ### Browser handoff login
 
-For a GUI-free local client, the gateway can expose a short-lived handoff URL:
+For a GUI-free local client, the gateway exposes a short-lived custom browser
+viewer. It contains only the isolated Chromium viewport:
 
 ```text
 Connect Gemini account: work
@@ -82,15 +83,15 @@ Gemini session verified
 ```
 
 Each authorization creates an independent Chromium profile, X display, loopback
-VNC server, and opaque noVNC capability URL. The URL expires after five minutes
+VNC server, and opaque viewer capability URL. The URL expires after five minutes
 by default. Completion succeeds only after the profile reports `ready`, and it
 then removes the VNC capability and stops that temporary desktop. Browser
 cookies never appear in URLs, logs, or MCP responses. This is a browser
 handoff, not a claim that Google OAuth for Gemini Web is available.
 
-The noVNC link is a short-lived capability. Configure its HTTPS proxy with
+The viewer link is a short-lived capability. Configure its HTTPS/WSS proxy with
 `Referrer-Policy: no-referrer`, do not record query strings in access logs, and
-do not embed that link in another site. The handoff profile is promoted into
+do not expose the raw VNC port. The handoff profile is promoted into
 the selected account directory after successful completion; expired or failed
 handoffs are deleted.
 
@@ -179,7 +180,6 @@ docker run -d \
   --security-opt no-new-privileges:true \
   --cap-drop ALL \
   -p 127.0.0.1:8000:8000 \
-  -p 127.0.0.1:6080:6080 \
   -v gemini-state:/var/lib/gemini-mcp \
   -v "$PWD/registry.key:/run/secrets/gemini_registry_key:ro" \
   -e GEMINI_REGISTRY_PATH=/var/lib/gemini-mcp/registry.json.enc \
@@ -188,7 +188,8 @@ docker run -d \
   -e GEMINI_PUBLIC_URL=https://gemini.proxmoxserver.dev \
   -e GEMINI_OAUTH_STATE_PATH=/var/lib/gemini-mcp/oauth-state.json \
   -e GEMINI_HANDOFF_ROOT=/var/lib/gemini-mcp/handoffs \
-  -e GEMINI_NOVNC_PUBLIC_URL=https://vnc.gemini.proxmoxserver.dev/vnc.html \
+  -e GEMINI_NOVNC_WS_URL=wss://gemini.proxmoxserver.dev/websockify \
+  -e GEMINI_VIEWER_FRAME_ANCESTORS="'self' https://chatgpt.com" \
   ghcr.io/arnost55/gemini-webapi-mcp:latest
 ```
 
@@ -198,11 +199,14 @@ encrypted account registry, and Chromium profiles. Reusing that volume keeps
 the existing ChatGPT MCP connection registered; changing or deleting it
 requires a new dynamic registration.
 
-Each OAuth authorization now gets a private, unguessable `sid` and noVNC
+Each OAuth authorization now gets a private, unguessable `sid` and viewer
 token. It is mapped only to the dedicated temporary VNC target for that login,
 not a shared desktop. Completion, expiry, or container restart removes the live
-desktop capability. Keep noVNC behind HTTPS; the token is a short-lived
-capability and must never be copied to tickets, logs, or chat messages.
+desktop capability. Keep the embedded viewer and WSS transport behind HTTPS;
+the token is a short-lived capability and must never be copied to tickets,
+logs, or chat messages. Proxy
+`/websockify` with WebSocket upgrades to the container's loopback transport;
+do not expose port 6080 publicly.
 
 The container writes token-scoped handoff manifests under the persistent state
 volume. On Debian/POSIX restart, stale manifests are cleaned only when the
@@ -222,7 +226,6 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:8000:8000"
-      - "127.0.0.1:6080:6080"
     volumes:
       - gemini-state:/var/lib/gemini-mcp
       - ./registry.key:/run/secrets/gemini_registry_key:ro
@@ -234,7 +237,8 @@ services:
       GEMINI_OAUTH_STATE_PATH: /var/lib/gemini-mcp/oauth-state.json
       GEMINI_HANDOFF_ROOT: /var/lib/gemini-mcp/handoffs
       GEMINI_PUBLIC_URL: https://gemini.proxmoxserver.dev
-      GEMINI_NOVNC_PUBLIC_URL: https://vnc.gemini.proxmoxserver.dev/vnc.html
+      GEMINI_NOVNC_WS_URL: wss://gemini.proxmoxserver.dev/websockify
+      GEMINI_VIEWER_FRAME_ANCESTORS: "'self' https://chatgpt.com"
     security_opt:
       - no-new-privileges:true
     cap_drop:

@@ -34,14 +34,15 @@
 - **Docker and Docker Compose** deployment with persistent account volumes
 - **Public URL ready** through an external HTTPS reverse proxy or MCP tunnel
 - **Persistent Chromium session supervisor** with five-minute checks, reload recovery, and login-required status
-- **One isolated Chromium desktop per authorization** with its own profile, X display, VNC target, and expiring noVNC capability URL
+- **One isolated Chromium browser per authorization** with its own profile, X display, VNC target, and expiring opaque capability
+- **Universal embedded login viewer** with a responsive RFB surface, desktop mouse/keyboard controls, mobile touch scrolling, cursor suppression, fullscreen, status, countdown, and cancellation
 - **Per-account scopes, maintenance mode, request limits, and safe status files**
 - **Secure browser handoff state** with five-minute expiry and capability removal after authorization completes
 - **Encrypted dynamic account registry** using AES-256-GCM; Base64 is only an encoding envelope
 - **Multi-worker registry safety** with advisory locking, reload-before-mutate, fsync, and atomic replacement
 - **Account lifecycle controls** for ready, disabled, and revoked profiles
 - **Local OAuth/DCR foundation** for ChatGPT MCP clients with PKCE
-- **Debian browser display** using Xvfb and noVNC for GUI-free, per-connection login
+- **Debian browser display** using Xvfb and internal websockify/RFB transport for GUI-free, per-connection login; the standard noVNC desktop UI is not exposed
 - **Crash recovery** for service-owned Chromium/Xvfb/fluxbox/VNC handoffs after restart
 
 ## Quick Start
@@ -76,7 +77,9 @@ browser, account, and gateway installation instructions. See
 multi-account isolation, scopes, and rate limits.
 
 The browser handoff is served by the built-in OAuth authorization page when
-`GEMINI_NOVNC_PUBLIC_URL` is set. It does not claim Google OAuth support for
+`GEMINI_PUBLIC_URL` and `GEMINI_NOVNC_WS_URL` are set. The link opens the
+custom `/auth/browser/viewer` surface, which connects to isolated Chromium
+through the internal RFB transport. It does not claim Google OAuth support for
 Gemini Web.
 
 The handoff creates an isolated login desktop. After login and OAuth state

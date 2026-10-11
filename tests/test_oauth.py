@@ -131,6 +131,22 @@ def test_browser_handoff_link_uses_a_separate_opaque_token():
     assert "handoff-token" != next(iter(oauth._codes))
 
 
+def test_browser_handoff_factory_receives_owner_and_account():
+    seen = []
+
+    def factory(subject, account):
+        seen.append((subject, account))
+        return "handoff-token", "https://gemini.example/auth/browser/viewer?sid=handoff-token"
+
+    oauth = LocalOAuth("https://gemini.example", handoff_url_factory=factory)
+    client = oauth.register({"client_name": "ChatGPT", "redirect_uris": ["https://chat.openai.com/cb"]})
+    oauth.authorize_page(
+        client["client_id"], client["redirect_uris"][0],
+        challenge("owner-binding-verifier-123456789012345678901234567890"), "state",
+    )
+    assert seen == [("client:" + client["client_id"], "gemini-" + client["client_id"][:12] + "-" + next(iter(oauth._codes))[:10])]
+
+
 def test_authorization_subject_is_isolated_per_dynamic_client():
     oauth = LocalOAuth("https://gemini.example")
     first = oauth.register({"client_name": "first", "redirect_uris": ["https://chat.openai.com/first"]})

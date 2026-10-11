@@ -125,13 +125,20 @@ any active state → revoked on container restart
 ```
 
 Each authorization receives a dedicated Chromium profile, display, loopback
-VNC listener, and opaque noVNC token. The browser capability expires in five
+VNC listener, and opaque viewer token. The browser capability expires in five
 minutes by default and is removed after completion. Tokens never contain
-cookies or Google credentials. Use a separate HTTPS noVNC origin, for example
-`https://vnc.gemini.proxmoxserver.dev/vnc.html`, and configure the proxy for
-WebSocket upgrades to the container's loopback-bound port 6080.
+cookies or Google credentials. Publish the MCP HTTPS origin and a WSS route
+for the internal websockify transport; do not publish a raw VNC port or the
+traditional noVNC desktop page.
 
-Treat the noVNC URL as a secret capability: send `Referrer-Policy: no-referrer`
+Set `GEMINI_NOVNC_WS_URL=wss://gemini.example/websockify` and proxy that path
+to the container's loopback-bound websockify service. The OAuth page links to
+`/auth/browser/viewer?sid=...`, a custom responsive viewport that uses the RFB
+client internally. `GEMINI_VIEWER_FRAME_ANCESTORS` may contain `'self'` and
+explicit HTTPS origins such as `https://chatgpt.com` when embedding is needed;
+the same viewer can always be opened as a top-level page.
+
+Treat the viewer URL as a secret capability: send `Referrer-Policy: no-referrer`
 and omit its query string from proxy access logs. A successfully completed
 profile is promoted into its new account directory; expired or failed handoffs
 are deleted.

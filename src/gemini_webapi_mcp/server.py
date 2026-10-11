@@ -21,12 +21,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, quote, urlsplit, urlunsplit
 
 from mcp.server.fastmcp import FastMCP, Context
 from .models import capabilities_json
 from .oauth import LocalOAuth
 from .browser_handoff import BrowserHandoffBroker
+from .viewer import DEFAULT_RFB_URL, content_security_policy, viewer_page
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 
@@ -528,8 +529,23 @@ _handoff_broker = BrowserHandoffBroker(
 )
 
 
-def _new_browser_handoff() -> tuple[str, str]:
-    handoff = _handoff_broker.create()
+def _viewer_ws_url() -> str:
+    configured = os.environ.get("GEMINI_NOVNC_WS_URL", "").strip()
+    if configured:
+        return configured.rstrip("/")
+    public = os.environ.get("GEMINI_NOVNC_PUBLIC_URL", "").strip()
+    if not public:
+        return ""
+    parsed = urlsplit(public)
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    return f"{scheme}://{parsed.netloc}/websockify"
+
+
+def _new_browser_handoff(subject: str = "", account: str = "") -> tuple[str, str]:
+    handoff = _handoff_broker.create(owner_subject=subject, account=account)
+    public = os.environ.get("GEMINI_PUBLIC_URL", "").rstrip("/")
+    if public:
+        return handoff.token, f"{public}/auth/browser/viewer?sid={quote(handoff.token, safe='')}"
     return handoff.token, _handoff_broker.browser_url(handoff)
 
 
@@ -585,7 +601,7 @@ def _consume_browser_handoff(token: str, subject: str, account: str) -> None:
 _oauth = LocalOAuth(
     os.environ.get("GEMINI_PUBLIC_URL", "http://localhost:8000"),
     state_path=os.environ.get("GEMINI_OAUTH_STATE_PATH", "/var/lib/gemini-mcp/oauth-state.json"),
-    handoff_url_factory=_new_browser_handoff if os.environ.get("GEMINI_NOVNC_PUBLIC_URL") else None,
+    handoff_url_factory=_new_browser_handoff if os.environ.get("GEMINI_PUBLIC_URL") else None,
     handoff_ready=_handoff_broker.is_ready,
     handoff_consume=_consume_browser_handoff,
 )
@@ -656,6 +672,79 @@ async def oauth_authorize(request: Request):
         return HTMLResponse(page)
     except (KeyError, ValueError) as exc:
         return PlainTextResponse(str(exc), status_code=400)
+
+
+def _viewer_ancestors() -> list[str]:
+    raw = os.environ.get("GEMINI_VIEWER_FRAME_ANCESTORS", "'self'")
+    values = [item.strip() for item in raw.split() if item.strip()]
+    # Only accept explicit origins or the CSP self keyword.  Paths, schemes
+    # without hosts, and arbitrary tokens must not become frame policies.
+    valid = []
+    for value in values:
+        if value == "'self'":
+            valid.append(value)
+            continue
+        parsed = urlsplit(value)
+        if parsed.scheme in {"https", "http"} and parsed.netloc and parsed.path in {"", "/"} and not parsed.query and not parsed.fragment:
+            valid.append(value.rstrip("/"))
+    return valid or ["'self'"]
+
+
+def _viewer_origin_allowed(request: Request) -> bool:
+    origin = request.headers.get("origin")
+    if not origin:
+        return True
+    allowed = set(_viewer_ancestors())
+    if "'self'" in allowed:
+        allowed.add(_oauth.issuer)
+    return origin.rstrip("/") in {item.rstrip("/") for item in allowed}
+
+
+@mcp.custom_route("/auth/browser/viewer", methods=["GET"])
+async def browser_viewer(request: Request):
+    if not _viewer_origin_allowed(request):
+        return PlainTextResponse("viewer origin is not allowed", status_code=403)
+    sid = request.query_params.get("sid", "")
+    if not sid or len(sid) > 128:
+        return PlainTextResponse("invalid browser handoff", status_code=400)
+    state = _handoff_broker.status(sid)
+    if state["state"] == "expired":
+        return PlainTextResponse("browser handoff expired", status_code=410)
+    ws_url = _viewer_ws_url()
+    if not ws_url:
+        return PlainTextResponse("embedded viewer is not configured", status_code=503)
+    rfb_url = os.environ.get("GEMINI_VIEWER_RFB_URL", DEFAULT_RFB_URL)
+    body = viewer_page(sid=sid, ws_url=ws_url, expires_at=float(state["expires_at"]), rfb_url=rfb_url)
+    headers = {
+        "Content-Security-Policy": content_security_policy(rfb_url, ws_url, _viewer_ancestors()),
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+        "Cache-Control": "no-store",
+    }
+    return HTMLResponse(body, headers=headers)
+
+
+@mcp.custom_route("/auth/browser/status", methods=["GET"])
+async def browser_status(request: Request):
+    sid = request.query_params.get("sid", "")
+    if not sid or len(sid) > 128:
+        return JSONResponse({"error": "invalid browser handoff"}, status_code=400)
+    state = _handoff_broker.status(sid)
+    return JSONResponse(state, status_code=200 if state["state"] != "expired" else 410, headers={"Cache-Control": "no-store"})
+
+
+@mcp.custom_route("/auth/browser/cancel", methods=["POST"])
+async def browser_cancel(request: Request):
+    if not _viewer_origin_allowed(request):
+        return JSONResponse({"error": "viewer origin is not allowed"}, status_code=403)
+    sid = request.query_params.get("sid", "")
+    if not sid or len(sid) > 128:
+        return JSONResponse({"error": "invalid browser handoff"}, status_code=400)
+    try:
+        _handoff_broker.consume(sid)
+    except ValueError:
+        return JSONResponse({"error": "expired or unknown browser handoff"}, status_code=410)
+    return JSONResponse({"cancelled": True}, headers={"Cache-Control": "no-store"})
 
 
 @mcp.custom_route("/oauth/complete", methods=["GET"])
