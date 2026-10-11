@@ -34,6 +34,7 @@ dependencies = [
     "curl-cffi>=0.14.0",
     "pydantic>=2.0",
     "cryptography>=43.0",
+    "websockets>=12,<16",
 ]
 
 [dependency-groups]

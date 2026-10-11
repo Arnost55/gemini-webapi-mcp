@@ -132,7 +132,10 @@ for the internal websockify transport; do not publish a raw VNC port or the
 traditional noVNC desktop page.
 
 Set `GEMINI_NOVNC_WS_URL=wss://gemini.example/websockify` and proxy that path
-to the container's loopback-bound websockify service. The OAuth page links to
+to the container's websockify service. The current image accepts the WebSocket
+on the MCP listener and bridges it internally to port 6080, so a single host
+forwarding to port 8000 is sufficient. A separate protected path rule may
+forward directly to the loopback-bound websockify service instead. The OAuth page links to
 `/auth/browser/viewer?sid=...`, a custom responsive viewport that uses the RFB
 client internally. `GEMINI_VIEWER_FRAME_ANCESTORS` may contain `'self'` and
 explicit HTTPS origins such as `https://chatgpt.com` when embedding is needed;

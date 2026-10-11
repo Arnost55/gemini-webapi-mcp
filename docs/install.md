@@ -221,7 +221,10 @@ desktop capability. Keep the embedded viewer and WSS transport behind HTTPS;
 the token is a short-lived capability and must never be copied to tickets,
 logs, or chat messages. Proxy
 `/websockify` with WebSocket upgrades to the container's loopback transport;
-do not expose port 6080 publicly.
+do not expose port 6080 publicly. The current image also bridges this path
+through the MCP listener on port 8000, so a single NPMplus proxy host works.
+If you configure a separate path rule, it may target the container's port 6080
+directly instead.
 
 The container writes token-scoped handoff manifests under the persistent state
 volume. On Debian/POSIX restart, stale manifests are cleaned only when the
