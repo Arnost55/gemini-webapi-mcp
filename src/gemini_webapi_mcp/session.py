@@ -96,8 +96,16 @@ class GeminiSessionManager:
         self.check_interval = check_interval
         self.headless = os.environ.get("GEMINI_HEADLESS", "1") != "0" if headless is None else headless
         self.login_url = login_url
-        self.browser_channel = os.environ.get("GEMINI_BROWSER_CHANNEL", "").strip() or None
         self.browser_executable = os.environ.get("GEMINI_BROWSER_EXECUTABLE", "").strip() or None
+        configured_channel = os.environ.get("GEMINI_BROWSER_CHANNEL")
+        # Use the installed, supported Chrome channel by default. An explicit
+        # executable takes precedence over the default channel, while an
+        # explicitly configured channel still wins and is validated below.
+        self.browser_channel = (
+            configured_channel.strip()
+            if configured_channel is not None
+            else (None if self.browser_executable else "chrome")
+        ) or None
         if self.browser_channel and self.browser_executable:
             raise ValueError("set only one of GEMINI_BROWSER_CHANNEL or GEMINI_BROWSER_EXECUTABLE")
         self.status_info = SessionStatus()
@@ -127,9 +135,17 @@ class GeminiSessionManager:
             launch_options["channel"] = self.browser_channel
         if self.browser_executable:
             launch_options["executable_path"] = self.browser_executable
-        self._context = await self._playwright.chromium.launch_persistent_context(
-            **launch_options,
-        )
+        try:
+            self._context = await self._playwright.chromium.launch_persistent_context(
+                **launch_options,
+            )
+        except Exception as exc:
+            await self.stop()
+            raise RuntimeError(
+                "The configured browser could not start with its sandbox enabled. "
+                "Install Google Chrome Stable or set GEMINI_BROWSER_EXECUTABLE to a supported browser; "
+                "do not add --no-sandbox."
+            ) from exc
         self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
         return await self.check_now()
 

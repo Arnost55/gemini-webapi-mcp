@@ -43,6 +43,14 @@ def test_manager_defaults_to_five_minutes(tmp_path):
     manager = GeminiSessionManager(tmp_path)
     assert manager.check_interval == 300
     assert manager.headless is True
+    assert manager.browser_channel == "chrome"
+
+
+def test_explicit_browser_executable_disables_default_channel(monkeypatch, tmp_path):
+    monkeypatch.delenv("GEMINI_BROWSER_CHANNEL", raising=False)
+    monkeypatch.setenv("GEMINI_BROWSER_EXECUTABLE", "/usr/bin/google-chrome")
+    manager = GeminiSessionManager(tmp_path)
+    assert manager.browser_channel is None
 
 
 def test_oauth_subject_resolves_only_to_its_isolated_profile(tmp_path):

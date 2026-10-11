@@ -158,10 +158,17 @@ GEMINI_BROWSER_CHANNEL=chrome       # or msedge
 # GEMINI_BROWSER_EXECUTABLE=/usr/bin/google-chrome
 ```
 
-The included Docker image installs Google Chrome Stable and uses
-`GEMINI_BROWSER_CHANNEL=chrome` by default. Rebuild the image after changing
-the Dockerfile; changing the environment variable alone cannot install a
-browser into an existing image.
+The included Docker image installs Google Chrome Stable and uses the `chrome`
+Playwright channel by default. Standalone installs use the same default unless
+you set `GEMINI_BROWSER_CHANNEL` or `GEMINI_BROWSER_EXECUTABLE`. Rebuild and
+recreate an existing container after changing the image; an environment
+variable cannot install Chrome into an old image.
+
+The login browser is intentionally launched with its sandbox enabled. The
+project does not add `--no-sandbox`: Google may reject that unsupported flag,
+and adding it would weaken the isolated login environment. If Chrome cannot
+start without that flag, fix the container's sandbox/runtime permissions or
+install a supported Chrome build rather than disabling the sandbox.
 
 This changes only which browser Playwright launches; it does not spoof browser
 identity or guarantee that Google will permit a remote/Xvfb session. If Google

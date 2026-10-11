@@ -166,9 +166,17 @@ docker compose logs -f gemini-mcp
 ```
 
 The image installs Google Chrome Stable and launches it by default through the
-`chrome` Playwright channel. If you set `GEMINI_BROWSER_CHANNEL=chrome` on an
+`chrome` Playwright channel. Standalone installs use the same default unless
+you explicitly configure `GEMINI_BROWSER_CHANNEL` or
+`GEMINI_BROWSER_EXECUTABLE`. If you set `GEMINI_BROWSER_CHANNEL=chrome` on an
 older image, rebuild and recreate the container; an environment variable does
 not download Chrome into an existing image.
+
+The login browser remains sandboxed. The image and launcher deliberately do
+not use `--no-sandbox`; Google can reject that unsupported command-line flag,
+and it would weaken the isolated login environment. If Chrome fails to start,
+fix the container runtime so its sandbox can initialize instead of adding that
+flag.
 
 The container listens on port 8000, while Compose binds it to loopback.
 Chromium profiles and status data persist in the `gemini-state` volume. Keep
