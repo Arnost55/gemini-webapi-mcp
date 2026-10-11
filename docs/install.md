@@ -201,6 +201,8 @@ docker run -d \
   -e GEMINI_PUBLIC_URL=https://gemini.proxmoxserver.dev \
   -e GEMINI_OAUTH_STATE_PATH=/var/lib/gemini-mcp/oauth-state.json \
   -e GEMINI_HANDOFF_ROOT=/var/lib/gemini-mcp/handoffs \
+  -e GEMINI_BROWSER_CHANNEL=chrome \
+  -e GEMINI_HEADLESS=0 \
   -e GEMINI_NOVNC_WS_URL=wss://gemini.proxmoxserver.dev/websockify \
   -e GEMINI_VIEWER_FRAME_ANCESTORS="'self' https://chatgpt.com" \
   ghcr.io/arnost55/gemini-webapi-mcp:latest

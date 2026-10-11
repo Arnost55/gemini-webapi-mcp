@@ -21,6 +21,9 @@ services:
       # Serve this host through the reverse proxy to port 6080 only.
       GEMINI_NOVNC_PUBLIC_URL: https://vnc.gemini.proxmoxserver.dev/vnc.html
       GEMINI_NOVNC_PORT: 6080
+      # Use the installed Google Chrome Stable build for the headed login handoff.
+      # Keep the Chrome sandbox enabled; do not add --no-sandbox.
+      GEMINI_BROWSER_CHANNEL: chrome
       GEMINI_HEADLESS: "0"
     security_opt:
       - no-new-privileges:true
