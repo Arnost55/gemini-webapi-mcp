@@ -172,6 +172,22 @@ class BrowserHandoffBroker:
             number += 1
         return self.display_start + number, self.vnc_port_start + number
 
+    def _write_fluxbox_config(self) -> Path:
+        """Create a display-only window-manager config with no desktop UI."""
+        path = self.root / "fluxboxrc"
+        self.root.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            path.write_text(
+                "session.screen0.toolbar.visible: false\n"
+                "session.screen0.toolbar.height: 0\n"
+                "session.screen0.rootCommand:\n"
+                "session.screen0.workspaces: 1\n"
+                "session.screen0.focusModel: ClickToFocus\n",
+                encoding="utf-8",
+            )
+            os.chmod(path, 0o600)
+        return path
+
     def create(self, owner_subject: str = "", account: str = "") -> BrowserHandoff:
         """Start a browser desktop and return an unguessable, expiring token."""
         with self._lock:
@@ -202,14 +218,14 @@ class BrowserHandoffBroker:
                 "until xdpyinfo -display \"$1\" >/dev/null 2>&1; do sleep 0.1; done; "
                 "shift; exec \"$@\"",
             ]
-            # Do not start a desktop window manager here.  Fluxbox's Debian
-            # startup helpers can invoke fbsetbg, which opens an xmessage
-            # dialog on the streamed display and hides Chromium behind it.
-            # Chromium can run directly on the isolated Xvfb display, and the
-            # viewer should expose only that browser surface.
+            # Use Fluxbox only as a lightweight window mapper. Its default
+            # root command can invoke fbsetbg, so use a private config with no
+            # root command and no toolbar.
+            fluxbox_config = self._write_fluxbox_config()
             commands = [
                 ["Xvfb", f":{display}", "-screen", "0", os.environ.get("GEMINI_BROWSER_SCREEN", "1440x900x24"), "-nolisten", "tcp"],
                 vnc_command,
+                [*wait_for_display, "handoff-fluxbox", f":{display}", "fluxbox", "-no-toolbar", "-rc", str(fluxbox_config)],
                 [*wait_for_display, "handoff-browser", f":{display}", "uv", "run", "gemini-web-session", "--profile-dir", str(profile), "--headed", "--status-file", str(status_file)],
             ]
             processes: list[subprocess.Popen] = []
