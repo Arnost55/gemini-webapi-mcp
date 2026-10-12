@@ -242,6 +242,7 @@ class BrowserHandoffBroker:
                 GEMINI_HEADLESS="0",
                 GEMINI_HANDOFF_TOKEN=token,
                 GEMINI_HANDOFF_PROFILE=str(profile),
+                GEMINI_DIRECT_BROWSER="true",
             )
             # x11vnc must not race Xvfb. Start it through a short wait loop so
             # a slow host cannot expose a handoff URL with a dead VNC target.
