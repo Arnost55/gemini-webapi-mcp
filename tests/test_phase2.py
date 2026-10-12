@@ -1,14 +1,106 @@
 import base64
+import asyncio
+import json
 from pathlib import Path
 
 import pytest
 
 from gemini_webapi_mcp.models import capabilities_json
+from gemini_webapi_mcp.server import mcp
 from gemini_webapi_mcp.server import (
     _decode_upload_bytes,
     _handle_error,
     _validate_upload_path,
 )
+
+
+_ONE_PIXEL_PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\x0dIDAT"
+    b"\x08\xd7c\xf8\xcf\xc0\xf0\x1f\x00\x05\x00\x01\xff\x89\x99=\x1d"
+    b"\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+def test_image_tool_uses_unstructured_native_content_output():
+    from mcp.server.fastmcp.utilities.types import Image
+    from mcp.types import ImageContent, TextContent
+
+    tool = mcp._tool_manager._tools["gemini_generate_image"]
+    assert tool.output_schema is None
+    converted = tool.fn_metadata.convert_result(["{\"images\": []}", Image(data=_ONE_PIXEL_PNG, format="png")])
+    assert isinstance(converted[0], TextContent)
+    assert isinstance(converted[1], ImageContent)
+    assert converted[1].mimeType == "image/png"
+    assert converted[1].data
+
+
+def test_conversation_tools_are_registered():
+    names = set(mcp._tool_manager._tools)
+    assert {
+        "gemini_list_chats",
+        "gemini_get_chat",
+        "gemini_get_chat_history",
+        "gemini_delete_chat",
+        "gemini_switch_model",
+    } <= names
+
+
+def test_streamable_http_tools_list_exposes_hotfix_contract():
+    """Exercise the actual Streamable HTTP initialize/tools/list exchange."""
+    import httpx
+
+    async def exchange():
+        app = mcp.streamable_http_app()
+        async with mcp.session_manager.run():
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://localhost:8000",
+            ) as client:
+                headers = {
+                    "accept": "application/json, text/event-stream",
+                    "content-type": "application/json",
+                }
+                initialize = await client.post(
+                    "/mcp",
+                    headers=headers,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": "2025-03-26",
+                            "capabilities": {},
+                            "clientInfo": {"name": "phase2-test", "version": "1"},
+                        },
+                    },
+                )
+                assert initialize.status_code == 200
+                headers["mcp-session-id"] = initialize.headers["mcp-session-id"]
+                await client.post(
+                    "/mcp",
+                    headers=headers,
+                    json={"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+                )
+                listed = await client.post(
+                    "/mcp",
+                    headers=headers,
+                    json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+                )
+                assert listed.status_code == 200
+                event = next(line[6:] for line in listed.text.splitlines() if line.startswith("data: "))
+                tools = json.loads(event)["result"]["tools"]
+                by_name = {item["name"]: item for item in tools}
+                assert {
+                    "gemini_list_chats",
+                    "gemini_get_chat",
+                    "gemini_get_chat_history",
+                    "gemini_delete_chat",
+                    "gemini_switch_model",
+                } <= by_name.keys()
+                assert "outputSchema" not in by_name["gemini_generate_image"]
+
+    asyncio.run(exchange())
 
 
 def test_fallback_models_are_explicitly_low_confidence(monkeypatch):
