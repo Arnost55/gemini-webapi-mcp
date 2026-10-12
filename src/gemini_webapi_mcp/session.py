@@ -247,8 +247,12 @@ class GeminiSessionManager:
             self.status_info.has_psidts = has_psidts
             self.status_info.error = None
         except Exception as exc:
-            self.status_info.state = "error"
-            self.status_info.error = type(exc).__name__
+            if self._browser_process is not None and self._browser_process.poll() is None:
+                self.status_info.state = "login_required"
+                self.status_info.error = None
+            else:
+                self.status_info.state = "error"
+                self.status_info.error = "browser_process_exited"
         self.status_info.checked_at = datetime.now(timezone.utc).isoformat()
         if self.status_info.state == "ready":
             self.status_info.last_valid_at = self.status_info.checked_at
