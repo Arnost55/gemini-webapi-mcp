@@ -131,6 +131,15 @@ class ConversationStore:
                 (subject, account, max(1, min(limit, 100)), max(0, offset)),
             )]
 
+    def count_for_account(self, subject: str, account: str) -> int:
+        """Count retained local conversations without exposing their content."""
+        with self._lock, self._connect() as db:
+            self.cleanup(db)
+            return int(db.execute(
+                "SELECT COUNT(*) FROM conversations WHERE subject=? AND account=?",
+                (subject, account),
+            ).fetchone()[0])
+
     def history(self, subject: str, account: str, session_id: str, limit: int = 100) -> list[dict]:
         with self._lock, self._connect() as db:
             self._row(db, subject, account, session_id)
