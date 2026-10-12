@@ -197,6 +197,8 @@ class GeminiSessionManager:
                    "--window-size=1440,900", self.login_url]
         env = dict(os.environ)
         self._browser_process = subprocess.Popen(command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # A manual viewer verification should observe cookie changes quickly.
+        self.check_interval = min(self.check_interval, 5.0)
         return await self.check_now()
 
     async def check_now(self) -> SessionStatus:
