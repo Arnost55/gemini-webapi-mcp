@@ -2,11 +2,13 @@ import base64
 import asyncio
 import json
 import io
+import time
 from pathlib import Path
 
 import pytest
 
 from gemini_webapi_mcp.models import capabilities_json
+from gemini_webapi.utils import parse_response_by_frame
 from gemini_webapi_mcp.server import mcp
 from gemini_webapi_mcp.server import (
     _decode_upload_bytes,
@@ -186,3 +188,57 @@ def test_upload_bytes_reject_oversized_payload(monkeypatch):
     encoded = base64.b64encode(b"four").decode()
     with pytest.raises(ValueError, match="exceeds"):
         _decode_upload_bytes("note.txt", encoded)
+
+
+def _frame(payload: str) -> str:
+    units = len((payload + "\n").encode("utf-16-le")) // 2
+    return f"{units}\n{payload}\n"
+
+
+def test_upstream_frame_parser_preserves_split_utf16_frames():
+    payload = '["partial 😀 frame"]'
+    frame = _frame(payload)
+    for split in range(1, len(frame)):
+        parts = []
+        remainder = ""
+        for chunk in (frame[:split], frame[split:]):
+            parsed, remainder = parse_response_by_frame(remainder + chunk)
+            parts.extend(parsed)
+        assert parts == ["partial 😀 frame"]
+        assert remainder == ""
+
+
+def test_upstream_frame_parser_retains_incomplete_frame_without_growth():
+    payload = '["slow"]'
+    frame = _frame(payload)
+    parts, remainder = parse_response_by_frame(frame[:-2])
+    assert parts == []
+    assert remainder == frame[:-2]
+    assert len(remainder) <= len(frame)
+
+
+def test_account_request_slots_bound_concurrency(monkeypatch, tmp_path):
+    from gemini_webapi_mcp.server import _AccountClientManager
+
+    monkeypatch.setenv("GEMINI_CONVERSATIONS_PATH", str(tmp_path / "conversations.sqlite3"))
+    manager = _AccountClientManager()
+    manager._account = lambda ctx: ("subject", {"account": "account", "requests_per_minute": 30})
+
+    async def run():
+        active = 0
+        peak = 0
+        lock = asyncio.Lock()
+
+        async def task():
+            nonlocal active, peak
+            async with manager.request_slot(object()):
+                async with lock:
+                    active += 1
+                    peak = max(peak, active)
+                await asyncio.sleep(0.01)
+                async with lock:
+                    active -= 1
+        await asyncio.gather(*(task() for _ in range(8)))
+        return peak
+
+    assert asyncio.run(run()) == 2
