@@ -784,6 +784,19 @@ async def browser_status(request: Request):
     return JSONResponse(state, status_code=200 if state["state"] != "expired" else 410, headers={"Cache-Control": "no-store"})
 
 
+@mcp.custom_route("/auth/browser/verify", methods=["POST"])
+async def browser_verify(request: Request):
+    """Force an immediate safe readiness check for the manual viewer button."""
+    if not _viewer_origin_allowed(request):
+        return JSONResponse({"error": "viewer origin is not allowed"}, status_code=403)
+    sid = request.query_params.get("sid", "")
+    if not sid or len(sid) > 128:
+        return JSONResponse({"error": "invalid browser handoff"}, status_code=400)
+    state = _handoff_broker.status(sid)
+    if state["state"] == "expired":
+        return JSONResponse(state, status_code=410, headers={"Cache-Control": "no-store"})
+    return JSONResponse(state, headers={"Cache-Control": "no-store"})
+
 @mcp.custom_route("/auth/browser/cancel", methods=["POST"])
 async def browser_cancel(request: Request):
     if not _viewer_origin_allowed(request):
