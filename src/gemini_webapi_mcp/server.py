@@ -10,6 +10,7 @@ import asyncio
 from collections import deque
 import json
 import logging
+import mimetypes
 import os
 import random
 import re
@@ -1492,10 +1493,11 @@ async def gemini_chat(
 
 
 @mcp.tool(name="gemini_list_chats", annotations={"title": "List Gemini Conversations", "readOnlyHint": True})
-async def gemini_list_chats(ctx: Context, limit: int = 50) -> dict:
+async def gemini_list_chats(ctx: Context, limit: int = 50, offset: int = 0) -> dict:
     manager = ctx.request_context.lifespan_context["account_clients"]
     subject, account = manager.conversation_owner(ctx)
-    return {"conversations": manager.conversations.list(subject, account, limit)}
+    conversations = manager.conversations.list(subject, account, limit, offset)
+    return {"conversations": conversations, "offset": max(0, offset), "limit": max(1, min(limit, 100)), "next_offset": offset + len(conversations) if len(conversations) == max(1, min(limit, 100)) else None}
 
 
 @mcp.tool(name="gemini_get_chat", annotations={"title": "Get Gemini Conversation", "readOnlyHint": True})
@@ -1523,7 +1525,9 @@ async def gemini_get_chat_history(session_id: str, ctx: Context, limit: int = 10
 
 
 @mcp.tool(name="gemini_delete_chat", annotations={"title": "Delete Local Gemini Conversation", "readOnlyHint": False})
-async def gemini_delete_chat(session_id: str, ctx: Context) -> dict:
+async def gemini_delete_chat(session_id: str, ctx: Context, confirm: bool = False) -> dict:
+    if not confirm:
+        return {"error": "confirmation_required", "message": "Set confirm=true to delete only this local conversation."}
     manager = ctx.request_context.lifespan_context["account_clients"]
     subject, account = manager.conversation_owner(ctx)
     try:
@@ -1759,8 +1763,16 @@ async def gemini_upload_file(
     """
     try:
         p = Path(file_path).expanduser().resolve()
-        if not p.exists():
+        if not p.is_file():
             return f"Error: File not found — {p}"
+        max_bytes = int(os.environ.get("GEMINI_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
+        if p.stat().st_size > max_bytes:
+            return "Error: file_upload_failed — file exceeds the configured upload limit."
+        mime, _ = mimetypes.guess_type(p.name)
+        allowed = {"text/plain", "application/pdf", "image/png", "image/jpeg", "image/webp",
+                   "text/markdown", "text/csv", "application/json", "video/mp4", "video/webm"}
+        if mime and mime not in allowed:
+            return "Error: file_upload_failed — unsupported file type."
 
         client = await _get_client(ctx)
         response = await client.generate_content(
