@@ -464,6 +464,7 @@ The only calibrated invariant is the star shape in `src/gemini_webapi_mcp/assets
 |------|-------------|
 | `gemini_generate_image` | Generate new or edit existing images |
 | `gemini_upload_file` | Analyze files — video, images, PDF, documents |
+| `gemini_upload_file_bytes` | Analyze caller-supplied base64 file bytes when paths are not shared with the container |
 | `gemini_analyze_url` | Analyze URLs — YouTube videos, webpages, articles |
 | `gemini_chat` | Text chat (single or multi-turn) |
 | `gemini_start_chat` | Start a multi-turn session |
@@ -497,7 +498,15 @@ gemini_generate_image(prompt="make it gray", files=["/path/to/cat.png"])
 gemini_generate_image(prompt="make the background darker", conversation_id=["c_abc", "r_123", "rc_456"])
 gemini_analyze_url(url="https://youtube.com/watch?v=...", prompt="Summarize this video")
 gemini_upload_file(file_path="/path/to/doc.pdf", prompt="Summarize key points")
+# When the caller cannot share its filesystem, send bounded base64 file bytes:
+gemini_upload_file_bytes(filename="doc.pdf", data_base64="<base64>", prompt="Summarize key points")
 ```
+
+`gemini_upload_file` is retained for deployments where the path exists inside
+the MCP container. `gemini_upload_file_bytes` strips directory components,
+enforces `GEMINI_MAX_UPLOAD_BYTES` and the same MIME allowlist, stores the
+decoded bytes in a private temporary directory for one request, and removes
+them afterward. It does not provide arbitrary host-file access.
 
 ## Acknowledgements
 
