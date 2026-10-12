@@ -66,11 +66,15 @@ This authenticates ChatGPT to the MCP server. It is not Google OAuth: Gemini
 Web login happens separately in a short-lived, isolated Chromium desktop.
 The server does not expose or return browser cookies.
 
-The MCP exposes `gemini_list_accounts` and `gemini_select_account` for the
-connected-account workflow. ChatGPT owns the visual account screen; the MCP
-provides the metadata, authorization flow, identities, and account state that
-screen consumes. Set `GEMINI_PUBLIC_URL` to the HTTPS origin before using
-remote OAuth.
+The MCP exposes `gemini_list_accounts`, `gemini_select_account`, and the
+read-only `gemini_account_diagnostics` tool for the connected-account workflow.
+`gemini_deactivate_account` requires the exact account ID as an explicit
+confirmation and disables only that registry record; it does not delete its
+Chromium profile, cookies, or conversations. Reauthentication reuses the
+persisted selection instead of creating a new random account record. ChatGPT
+owns the visual account screen; the MCP provides the metadata, authorization
+flow, identities, and account state that screen consumes. Set
+`GEMINI_PUBLIC_URL` to the HTTPS origin before using remote OAuth.
 
 See [`docs/install.md`](docs/install.md) for complete local, Debian/Proxmox,
 browser, account, and gateway installation instructions. See
@@ -465,6 +469,8 @@ The only calibrated invariant is the star shape in `src/gemini_webapi_mcp/assets
 | Tool | Description |
 |------|-------------|
 | `gemini_server_info` | Report safe build, protocol, capability, tool, and conversation-schema metadata |
+| `gemini_account_diagnostics` | Report sanitized account/profile health and reference counts |
+| `gemini_deactivate_account` | Explicitly disable one account without deleting persistent data |
 | `gemini_generate_image` | Generate new or edit existing images |
 | `gemini_upload_file` | Analyze files — video, images, PDF, documents |
 | `gemini_upload_file_bytes` | Analyze caller-supplied base64 file bytes when paths are not shared with the container |
