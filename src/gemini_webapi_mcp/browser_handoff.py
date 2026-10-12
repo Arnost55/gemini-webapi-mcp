@@ -297,6 +297,7 @@ class BrowserHandoffBroker:
                 import browser_cookie3
                 cookies = browser_cookie3.chrome(
                     cookie_file=str(Path(session.profile) / "Default" / "Cookies"),
+                    key_file=str(Path(session.profile) / "Local State"),
                     domain_name="gemini.google.com",
                 )
                 names = {cookie.name for cookie in cookies if cookie.value}
