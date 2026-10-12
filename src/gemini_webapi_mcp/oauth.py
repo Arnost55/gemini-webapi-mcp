@@ -285,7 +285,7 @@ class LocalOAuth:
             # isolated broker.  This never puts the OAuth code in the URL.
             browser_url = os.environ.get("GEMINI_NOVNC_PUBLIC_URL", "")
         browser_link = (
-            "<a class='button secondary' target='_blank' rel='noopener' href='" + html.escape(browser_url, quote=True) + "'>Open Chromium login</a>"
+            "<a class='button secondary' href='" + html.escape(browser_url, quote=True) + "'>Open Chromium login</a>"
             if browser_url else
             "<div class='notice'>The embedded Chromium viewer is not configured yet. Set <code>GEMINI_PUBLIC_URL</code> and <code>GEMINI_NOVNC_WS_URL</code>, or complete login in the container browser profile.</div>"
         )
