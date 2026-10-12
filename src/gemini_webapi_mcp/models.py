@@ -23,12 +23,13 @@ class ModelCapability:
     video_output: bool = False
     reasoning: bool = False
     source: str = "observed"
+    confidence: str = "observed"
 
 
 FALLBACKS = (
-    ModelCapability("gemini-3.0-flash", "Gemini Flash", source="fallback"),
-    ModelCapability("gemini-3.0-pro", "Gemini Pro", source="fallback"),
-    ModelCapability("gemini-3.0-flash-thinking", "Gemini Flash Thinking", reasoning=True, source="fallback"),
+    ModelCapability("gemini-3.0-flash", "Gemini Flash", source="fallback", confidence="low"),
+    ModelCapability("gemini-3.0-pro", "Gemini Pro", source="fallback", confidence="low"),
+    ModelCapability("gemini-3.0-flash-thinking", "Gemini Flash Thinking", reasoning=True, source="fallback", confidence="low"),
 )
 
 
@@ -60,7 +61,7 @@ def discover_models(client: Any | None = None) -> list[ModelCapability]:
     if not values:
         return list(FALLBACKS)
     unique = dict.fromkeys(values)
-    return [ModelCapability(model_id, model_id, source="observed") for model_id in unique]
+    return [ModelCapability(model_id, model_id, source="observed", confidence="observed") for model_id in unique]
 
 
 def capabilities_json(client: Any | None = None) -> list[dict[str, Any]]:
