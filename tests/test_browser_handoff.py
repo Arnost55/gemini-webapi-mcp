@@ -37,7 +37,7 @@ def test_handoffs_get_separate_profiles_displays_and_vnc_targets(tmp_path: Path)
     assert first.token != second.token
     assert len(commands) == 8
     assert any("xdpyinfo" in part for command, _ in commands for part in command)
-    assert any("fluxbox" in part for command, _ in commands for part in command)
+    assert any("handoff-display-manager" in part for command, _ in commands for part in command)
     assert not any("fbsetbg" in part for command, _ in commands for part in command)
     fluxbox_config = (tmp_path / "fluxboxrc").read_text(encoding="utf-8")
     assert "session.screen0.toolbar.visible: false" in fluxbox_config
