@@ -765,7 +765,7 @@ async def browser_viewer(request: Request):
     if not ws_url:
         return PlainTextResponse("embedded viewer is not configured", status_code=503)
     rfb_url = os.environ.get("GEMINI_VIEWER_RFB_URL", DEFAULT_RFB_URL)
-    body = viewer_page(sid=sid, ws_url=ws_url, expires_at=float(state["expires_at"]), rfb_url=rfb_url)
+    body = viewer_page(sid=sid, ws_url=ws_url, expires_at=float(state["expires_at"]), complete_url=request.query_params.get("complete", ""), rfb_url=rfb_url)
     headers = {
         "Content-Security-Policy": content_security_policy(rfb_url, ws_url, _viewer_ancestors()),
         "X-Content-Type-Options": "nosniff",
