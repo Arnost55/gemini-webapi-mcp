@@ -152,6 +152,7 @@ class GeminiSessionManager:
                 "--disable-gpu",
                 "--no-first-run",
                 "--no-default-browser-check",
+                "--password-store=basic",
                 "--window-size=1440,900",
             ],
         }
@@ -193,7 +194,7 @@ class GeminiSessionManager:
             raise RuntimeError("Google Chrome is not installed")
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         command = [executable, f"--user-data-dir={self.profile_dir}", "--profile-directory=Default",
-                   "--no-first-run", "--no-default-browser-check", "--disable-gpu",
+                   "--no-first-run", "--no-default-browser-check", "--password-store=basic", "--disable-gpu",
                    "--window-size=1440,900", self.login_url]
         env = dict(os.environ)
         self._browser_process = subprocess.Popen(command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
