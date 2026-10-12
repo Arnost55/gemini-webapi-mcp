@@ -173,7 +173,7 @@ class BrowserHandoffBroker:
                 lines = Path(proc_path).read_text(encoding="ascii").splitlines()[1:]
             except OSError:
                 continue
-            if any(len(fields) >= 4 and fields[1].startswith(needle) and fields[3] == "0A" for fields in (line.split() for line in lines)):
+            if any(len(fields) >= 4 and fields[1].endswith(needle) and fields[3] == "0A" for fields in (line.split() for line in lines)):
                 return True
         return False
 
