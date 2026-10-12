@@ -1620,6 +1620,10 @@ async def gemini_switch_model(session_id: str, model: str, ctx: Context) -> dict
 
 @mcp.tool(
     name="gemini_generate_image",
+    # The tool returns a text metadata block plus native MCP Image blocks.
+    # Structured output would wrap the return value in {result: ...} and
+    # validate it against the -> str annotation before content conversion.
+    structured_output=False,
     annotations={
         "title": "Gemini Image Generation",
         "readOnlyHint": False,
