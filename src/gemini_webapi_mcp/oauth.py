@@ -279,6 +279,7 @@ class LocalOAuth:
             else:
                 token, browser_url = self._handoff_url_factory()
             self._codes[code].handoff_token = token
+            browser_url = browser_url + ("&" if "?" in browser_url else "?") + urlencode({"complete": finish})
         else:
             # Compatibility for deployments which have not yet enabled the
             # isolated broker.  This never puts the OAuth code in the URL.
