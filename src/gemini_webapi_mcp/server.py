@@ -388,6 +388,9 @@ class _AccountClientManager:
         self._rate_windows: dict[tuple[str, str], deque[float]] = {}
         self._global_rate_window: deque[float] = deque()
         self._lock = asyncio.Lock()
+        self._cookie_pairs: dict[tuple[str, str], tuple[str, str | None]] = {}
+        self._profiles: dict[tuple[str, str], Path] = {}
+        self._refresh_task: asyncio.Task | None = None
 
     def _allow_request(self, subject: str, account: str, requests_per_minute: int) -> None:
         now = time.monotonic()
@@ -452,6 +455,42 @@ class _AccountClientManager:
             raise RuntimeError("selected Gemini account is not logged in")
         return psid, psidts
 
+    async def _build_client(self, key: tuple[str, str], profile: Path):
+        from gemini_webapi import GeminiClient
+        psid, psidts = self._cookies(profile)
+        client = GeminiClient(secure_1psid=psid, secure_1psidts=psidts or None)
+        await client.init(timeout=300, watchdog_timeout=45, auto_close=False, auto_refresh=True)
+        _patch_client(client)
+        self._cookie_pairs[key] = (psid, psidts)
+        self._profiles[key] = profile
+        return client
+
+    async def refresh_cookies(self) -> None:
+        async with self._lock:
+            for key, old_client in list(self.clients.items()):
+                profile = self._profiles.get(key)
+                if profile is None:
+                    continue
+                try:
+                    pair = self._cookies(profile)
+                    if pair == self._cookie_pairs.get(key):
+                        continue
+                    new_client = await self._build_client(key, profile)
+                    await old_client.close()
+                    self.clients[key] = new_client
+                except Exception:
+                    logger.warning("Gemini cookie refresh failed for account %s", key[1], exc_info=True)
+
+    async def _refresh_loop(self) -> None:
+        interval = max(60, int(os.environ.get("GEMINI_COOKIE_REFRESH_SECONDS", "300")))
+        while True:
+            await asyncio.sleep(interval)
+            await self.refresh_cookies()
+
+    def start_refresh_loop(self) -> None:
+        if self._refresh_task is None:
+            self._refresh_task = asyncio.create_task(self._refresh_loop())
+
     async def get(self, ctx: Context):
         from gemini_webapi import GeminiClient
         subject, record = self._account(ctx)
@@ -462,10 +501,7 @@ class _AccountClientManager:
             client = self.clients.get(key)
             if client is not None:
                 return client
-            psid, psidts = self._cookies(self._profile(record))
-            client = GeminiClient(secure_1psid=psid, secure_1psidts=psidts or None)
-            await client.init(timeout=300, watchdog_timeout=45, auto_close=False, auto_refresh=True)
-            _patch_client(client)
+            client = await self._build_client(key, self._profile(record))
             self.clients[key] = client
             return client
 
@@ -485,6 +521,13 @@ class _AccountClientManager:
         return account_dir
 
     async def close(self) -> None:
+        if self._refresh_task is not None:
+            self._refresh_task.cancel()
+            try:
+                await self._refresh_task
+            except asyncio.CancelledError:
+                pass
+            self._refresh_task = None
         for client in list(self.clients.values()):
             try:
                 await client.close()
@@ -496,6 +539,7 @@ class _AccountClientManager:
 @asynccontextmanager
 async def app_lifespan(server):
     manager = _AccountClientManager()
+    manager.start_refresh_loop()
     _handoff_broker.revoke_stale_tokens()
     try:
         yield {"account_clients": manager}
