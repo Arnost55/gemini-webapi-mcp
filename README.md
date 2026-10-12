@@ -431,6 +431,8 @@ If cookie auto-detection fails, set them manually:
 | `GEMINI_PSIDTS` | Cookie value `__Secure-1PSIDTS` | auto from Chrome |
 | `GEMINI_LANGUAGE` | Gemini response language (`ru`, `en`, `ja`, ...) | `en` |
 | `GEMINI_ACCOUNT_INDEX` | Legacy Chrome account index for local cookie mode | `0` |
+| `GEMINI_UPSTREAM_AUTO_REFRESH` | Enable the upstream network cookie-rotation task; disabled by default to avoid Google 429s across multiple clients | `0` |
+| `GEMINI_UPSTREAM_REFRESH_INTERVAL` | Minimum interval for upstream cookie rotation when enabled (seconds) | `1800` |
 
 ## High Resolution (2x)
 
