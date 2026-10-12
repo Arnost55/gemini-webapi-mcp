@@ -7,6 +7,7 @@ browser cookies (__Secure-1PSID and __Secure-1PSIDTS).
 """
 
 import asyncio
+import base64
 from collections import deque
 import json
 import logging
@@ -1065,6 +1066,48 @@ def _get_media_dir(ctx: Context) -> Path:
     return ctx.request_context.lifespan_context["account_clients"].media_dir(ctx)
 
 
+_UPLOAD_MIME_TYPES = {
+    "text/plain", "application/pdf", "image/png", "image/jpeg", "image/webp",
+    "text/markdown", "text/csv", "application/json", "video/mp4", "video/webm",
+}
+
+
+def _validate_upload_path(file_path: str) -> Path:
+    """Validate a caller-supplied path without broadening filesystem access."""
+    path = Path(file_path).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(str(path))
+    max_bytes = int(os.environ.get("GEMINI_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
+    if path.stat().st_size > max_bytes:
+        raise ValueError("file_upload_failed — file exceeds the configured upload limit")
+    mime, _ = mimetypes.guess_type(path.name)
+    if mime and mime not in _UPLOAD_MIME_TYPES:
+        raise ValueError("file_upload_failed — unsupported file type")
+    return path
+
+
+def _decode_upload_bytes(filename: str, data_base64: str) -> tuple[str, bytes]:
+    """Decode bounded MCP-uploaded bytes and validate their declared type."""
+    name = Path(filename).name
+    if not name or name in {".", ".."}:
+        raise ValueError("file_upload_failed — a filename is required")
+    max_bytes = int(os.environ.get("GEMINI_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
+    if not isinstance(data_base64, str) or len(data_base64) > ((max_bytes + 2) // 3) * 4 + 16:
+        raise ValueError("file_upload_failed — file exceeds the configured upload limit")
+    try:
+        data = base64.b64decode(data_base64, validate=True)
+    except (ValueError, TypeError, base64.binascii.Error) as exc:
+        raise ValueError("file_upload_failed — data is not valid base64") from exc
+    if not data:
+        raise ValueError("file_upload_failed — empty files are not supported")
+    if len(data) > max_bytes:
+        raise ValueError("file_upload_failed — file exceeds the configured upload limit")
+    mime, _ = mimetypes.guess_type(name)
+    if mime and mime not in _UPLOAD_MIME_TYPES:
+        raise ValueError("file_upload_failed — unsupported file type")
+    return name, data
+
+
 _image_mode = False
 _image_lock = asyncio.Lock()
 
@@ -1788,17 +1831,12 @@ async def gemini_upload_file(
         Gemini's text response about the uploaded file.
     """
     try:
-        p = Path(file_path).expanduser().resolve()
-        if not p.is_file():
-            return f"Error: File not found — {p}"
-        max_bytes = int(os.environ.get("GEMINI_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
-        if p.stat().st_size > max_bytes:
-            return "Error: file_upload_failed — file exceeds the configured upload limit."
-        mime, _ = mimetypes.guess_type(p.name)
-        allowed = {"text/plain", "application/pdf", "image/png", "image/jpeg", "image/webp",
-                   "text/markdown", "text/csv", "application/json", "video/mp4", "video/webm"}
-        if mime and mime not in allowed:
-            return "Error: file_upload_failed — unsupported file type."
+        try:
+            p = _validate_upload_path(file_path)
+        except FileNotFoundError as exc:
+            return f"Error: File not found — {exc.args[0]}"
+        except ValueError as exc:
+            return f"Error: {exc}"
 
         client = await _get_client(ctx)
         response = await client.generate_content(
@@ -1808,6 +1846,52 @@ async def gemini_upload_file(
 
     except Exception as e:
         return _handle_error(e)
+
+
+@mcp.tool(
+    name="gemini_upload_file_bytes",
+    annotations={
+        "title": "Gemini Upload File Bytes",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    },
+)
+async def gemini_upload_file_bytes(
+    filename: str,
+    data_base64: str,
+    ctx: Context,
+    prompt: str = "Describe this file.",
+    model: Optional[str] = None,
+) -> str:
+    """Upload file bytes supplied by the MCP caller.
+
+    This is the safe alternative when the caller's filesystem is not shared
+    with the MCP container.  The decoded file is held in a private temporary
+    directory for the duration of the upstream request and is then removed.
+    The filename is reduced to a basename before it is used.
+    """
+    temp_dir: Path | None = None
+    try:
+        safe_name, data = _decode_upload_bytes(filename, data_base64)
+        client = await _get_client(ctx)
+        account_clients = ctx.request_context.lifespan_context["account_clients"]
+        account = re.sub(r"[^A-Za-z0-9_.-]", "_", account_clients.conversation_owner(ctx)[1])
+        temp_dir = Path(shutil.mkdtemp(prefix=f"gemini-upload-{account}-"))
+        temp_path = temp_dir / safe_name
+        temp_path.write_bytes(data)
+        response = await client.generate_content(
+            prompt, model=model or DEFAULT_MODEL, files=[str(temp_path)]
+        )
+        return response.text or "(empty response)"
+    except ValueError as exc:
+        return f"Error: {exc}"
+    except Exception as e:
+        return _handle_error(e)
+    finally:
+        if temp_dir is not None:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 @mcp.tool(
