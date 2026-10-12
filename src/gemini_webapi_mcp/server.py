@@ -67,6 +67,24 @@ CHAT_TIMEOUT = float(os.environ.get("GEMINI_CHAT_TIMEOUT", "300"))
 DOWNLOAD_TIMEOUT = float(os.environ.get("GEMINI_DOWNLOAD_TIMEOUT", "60"))
 UPSTREAM_RETRY_BUDGET = max(0, min(int(os.environ.get("GEMINI_UPSTREAM_RETRIES", "1")), 5))
 
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Parse a boolean environment flag without treating arbitrary text as true."""
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+# The upstream library rotates __Secure-1PSIDTS over the network. Multiple
+# account-scoped clients doing that independently can trigger Google's 429
+# limiter, while the server already rereads the persistent Chromium profile.
+# Keep upstream rotation available, but make it explicitly opt-in.
+UPSTREAM_AUTO_REFRESH = _env_flag("GEMINI_UPSTREAM_AUTO_REFRESH", False)
+UPSTREAM_REFRESH_INTERVAL = max(
+    600.0, float(os.environ.get("GEMINI_UPSTREAM_REFRESH_INTERVAL", "1800"))
+)
+
 # Optional stage timing: set GEMINI_DEBUG_TIMING=1 to log per-stage wall-time.
 _DEBUG_TIMING = os.environ.get("GEMINI_DEBUG_TIMING") == "1"
 # c8o8Fe 2x-upscale RPC gives full-resolution downloads (~1792×2390 for portrait
@@ -569,7 +587,8 @@ class _AccountClientManager:
             timeout=float(os.environ.get("GEMINI_CLIENT_TIMEOUT", "300")),
             watchdog_timeout=float(os.environ.get("GEMINI_WATCHDOG_TIMEOUT", "90")),
             auto_close=False,
-            auto_refresh=True,
+            auto_refresh=UPSTREAM_AUTO_REFRESH,
+            refresh_interval=UPSTREAM_REFRESH_INTERVAL,
         )
         _patch_client(client)
         self._cookie_pairs[key] = (psid, psidts)
