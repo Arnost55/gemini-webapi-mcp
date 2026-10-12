@@ -12,6 +12,7 @@ from gemini_webapi.utils import parse_response_by_frame
 from gemini_webapi_mcp.server import mcp
 from gemini_webapi_mcp.server import (
     _decode_upload_bytes,
+    _env_flag,
     _handle_error,
     _native_image_content,
     gemini_server_info,
@@ -25,6 +26,15 @@ _ONE_PIXEL_PNG = (
     b"\x08\xd7c\xf8\xcf\xc0\xf0\x1f\x00\x05\x00\x01\xff\x89\x99=\x1d"
     b"\x00\x00\x00\x00IEND\xaeB`\x82"
 )
+
+
+def test_upstream_auto_refresh_is_explicitly_opt_in(monkeypatch):
+    monkeypatch.delenv("GEMINI_UPSTREAM_AUTO_REFRESH", raising=False)
+    assert _env_flag("GEMINI_UPSTREAM_AUTO_REFRESH", False) is False
+    monkeypatch.setenv("GEMINI_UPSTREAM_AUTO_REFRESH", "yes")
+    assert _env_flag("GEMINI_UPSTREAM_AUTO_REFRESH", False) is True
+    monkeypatch.setenv("GEMINI_UPSTREAM_AUTO_REFRESH", "unexpected")
+    assert _env_flag("GEMINI_UPSTREAM_AUTO_REFRESH", False) is False
 
 
 def test_image_tool_uses_unstructured_native_content_output():
