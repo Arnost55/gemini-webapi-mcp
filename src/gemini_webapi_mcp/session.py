@@ -10,6 +10,8 @@ import argparse
 import asyncio
 import json
 import os
+import shutil
+import subprocess
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -131,6 +133,7 @@ class GeminiSessionManager:
         self._playwright = None
         self._context = None
         self._page = None
+        self._browser_process = None
 
     def browser_launch_options(self) -> dict[str, object]:
         """Build the single persistent-browser launch configuration.
@@ -159,6 +162,8 @@ class GeminiSessionManager:
         return options
 
     async def start(self) -> SessionStatus:
+        if parse_env_bool("GEMINI_DIRECT_BROWSER", default=False):
+            return await self._start_direct_browser()
         try:
             from playwright.async_api import async_playwright
         except ImportError as exc:
@@ -181,7 +186,22 @@ class GeminiSessionManager:
         self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
         return await self.check_now()
 
+    async def _start_direct_browser(self) -> SessionStatus:
+        """Launch ordinary Chrome; use the profile cookie DB for readiness."""
+        executable = self.browser_executable or shutil.which("google-chrome") or shutil.which("google-chrome-stable")
+        if not executable:
+            raise RuntimeError("Google Chrome is not installed")
+        self.profile_dir.mkdir(parents=True, exist_ok=True)
+        command = [executable, f"--user-data-dir={self.profile_dir}", "--profile-directory=Default",
+                   "--no-first-run", "--no-default-browser-check", "--disable-gpu",
+                   "--window-size=1440,900", self.login_url]
+        env = dict(os.environ)
+        self._browser_process = subprocess.Popen(command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return await self.check_now()
+
     async def check_now(self) -> SessionStatus:
+        if self._browser_process is not None:
+            return self._check_direct_browser()
         if self._page is None or self._context is None:
             raise RuntimeError("Session manager has not been started")
         try:
@@ -214,6 +234,26 @@ class GeminiSessionManager:
             self.status_info.error = type(exc).__name__
         return self.status_info
 
+    def _check_direct_browser(self) -> SessionStatus:
+        """Refresh cookie presence from the live Chrome profile, never values."""
+        try:
+            import browser_cookie3
+            cookies = browser_cookie3.chrome(cookie_file=str(self.profile_dir / "Default" / "Cookies"), domain_name="gemini.google.com")
+            names = {cookie.name for cookie in cookies if cookie.value}
+            has_psid = "__Secure-1PSID" in names
+            has_psidts = "__Secure-1PSIDTS" in names
+            self.status_info.state = "ready" if has_psid else "login_required"
+            self.status_info.has_psid = has_psid
+            self.status_info.has_psidts = has_psidts
+            self.status_info.error = None
+        except Exception as exc:
+            self.status_info.state = "error"
+            self.status_info.error = type(exc).__name__
+        self.status_info.checked_at = datetime.now(timezone.utc).isoformat()
+        if self.status_info.state == "ready":
+            self.status_info.last_valid_at = self.status_info.checked_at
+        return self.status_info
+
     async def _classify(self) -> SessionState:
         body = await self._page.locator("body").inner_text(timeout=10_000)
         return classify_gemini_page(self._page.url, body)
@@ -226,6 +266,14 @@ class GeminiSessionManager:
             await self.check_now()
 
     async def stop(self) -> None:
+        if self._browser_process is not None:
+            if self._browser_process.poll() is None:
+                self._browser_process.terminate()
+                try:
+                    self._browser_process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    self._browser_process.kill()
+            self._browser_process = None
         if self._context is not None:
             await self._context.close()
         if self._playwright is not None:
