@@ -289,6 +289,7 @@ class LocalOAuth:
             if browser_url else
             "<div class='notice'>The embedded Chromium viewer is not configured yet. Set <code>GEMINI_PUBLIC_URL</code> and <code>GEMINI_NOVNC_WS_URL</code>, or complete login in the container browser profile.</div>"
         )
+        browser_auto = "<script>window.location.replace(" + json.dumps(browser_url) + ")</script>" if browser_url else ""
         return """<!doctype html>
 <html><head><meta name='viewport' content='width=device-width,initial-scale=1'>
 <title>Connect Gemini account</title><style>
@@ -296,7 +297,7 @@ body{margin:0;background:#0b1020;color:#eef2ff;font:16px system-ui,sans-serif}.c
 <body><main class='card'><h1>Connect Gemini account</h1>
 <p>This authorizes the MCP connection. Gemini Web login is completed in the isolated Chromium profile on your server.</p>
 <ol class='steps'><li><b>1.</b> Open Chromium login.</li><li><b>2.</b> Sign in to the Google account you want to connect.</li><li><b>3.</b> Return here and continue.</li></ol>
-""" + browser_link + "<a class='button' href='" + html.escape(finish, quote=True) + "'>Continue after login</a>" + """
+""" + browser_auto + browser_link + "<a class='button' href='" + html.escape(finish, quote=True) + "'>Continue after login</a>" + """
 <p class='small'>This page never displays or transmits your Google cookies. The authorization link expires after a short time and can be used once.</p></main></body></html>"""
 
     def completion_redirect(self, code: str, state: str, subject: str | None = None) -> str:
