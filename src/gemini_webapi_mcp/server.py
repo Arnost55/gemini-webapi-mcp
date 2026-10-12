@@ -65,6 +65,7 @@ CHAT_TIMEOUT = float(os.environ.get("GEMINI_CHAT_TIMEOUT", "300"))
 # Per-network-op timeout for image download in image.save() (seconds). Without
 # this the CDN fetch of the full-size (=s0, ~4.5MB) image can hang forever.
 DOWNLOAD_TIMEOUT = float(os.environ.get("GEMINI_DOWNLOAD_TIMEOUT", "60"))
+UPSTREAM_RETRY_BUDGET = max(0, min(int(os.environ.get("GEMINI_UPSTREAM_RETRIES", "1")), 5))
 
 # Optional stage timing: set GEMINI_DEBUG_TIMING=1 to log per-stage wall-time.
 _DEBUG_TIMING = os.environ.get("GEMINI_DEBUG_TIMING") == "1"
@@ -466,6 +467,7 @@ class _AccountClientManager:
         self._profiles: dict[tuple[str, str], Path] = {}
         self._refresh_task: asyncio.Task | None = None
         self._maintenance_task: asyncio.Task | None = None
+        self._request_slots: dict[tuple[str, str], asyncio.Semaphore] = {}
         from .conversations import ConversationStore
         self.conversations = ConversationStore()
 
@@ -524,21 +526,24 @@ class _AccountClientManager:
             raise RuntimeError("cookie_key_missing: Chromium Local State is missing")
         if not os.access(cookie_file, os.R_OK) or not os.access(local_state, os.R_OK):
             raise RuntimeError("cookie_storage_permission: Chromium cookie files are not readable")
-        try:
-            import browser_cookie3
-            cookies = browser_cookie3.chrome(
-                cookie_file=str(cookie_file),
-                key_file=str(local_state),
-            )
-        except ImportError as exc:
-            raise RuntimeError("cookie_reader_missing: browser-cookie3 is not installed") from exc
-        except Exception as exc:
-            # On Linux browser-cookie3 tries SecretService/KWallet and ignores
-            # key_file.  The session launcher deliberately uses Chromium's
-            # --password-store=basic, whose v10 cookies use Chromium's stable
-            # "peanuts" key and do not require a desktop keyring.
-            logger.info("browser-cookie3 could not read Chromium cookies: %s", type(exc).__name__)
+        # Account profiles are launched with Chromium's basic password store.
+        # Prefer the direct v10 reader so browser-cookie3 does not probe
+        # SecretService/KWallet and emit a misleading KeyError on headless hosts.
+        reader = os.environ.get("GEMINI_ACCOUNT_COOKIE_READER", "basic").lower()
+        if reader == "basic":
             cookies = _read_basic_chromium_cookies(cookie_file)
+        else:
+            try:
+                import browser_cookie3
+                cookies = browser_cookie3.chrome(
+                    cookie_file=str(cookie_file),
+                    key_file=str(local_state),
+                )
+            except ImportError as exc:
+                raise RuntimeError("cookie_reader_missing: browser-cookie3 is not installed") from exc
+            except Exception as exc:
+                logger.info("browser-cookie3 could not read Chromium cookies: %s", type(exc).__name__)
+                raise RuntimeError("cookie_storage_unreadable: configured browser cookie reader failed") from exc
         psid = psidts = None
         for cookie in cookies:
             if isinstance(cookie, tuple):
@@ -652,6 +657,19 @@ class _AccountClientManager:
         subject, record = self._account(ctx)
         return subject, str(record["account"])
 
+    @asynccontextmanager
+    async def request_slot(self, ctx: Context):
+        """Bound concurrent upstream requests per selected account."""
+        subject, record = self._account(ctx)
+        key = (subject, str(record["account"]))
+        limit = max(1, min(int(os.environ.get("GEMINI_MAX_CONCURRENT_PER_ACCOUNT", "2")), 8))
+        async with self._lock:
+            slot = self._request_slots.get(key)
+            if slot is None:
+                slot = self._request_slots[key] = asyncio.Semaphore(limit)
+        async with slot:
+            yield
+
     def media_dir(self, ctx: Context) -> Path:
         _, record = self._account(ctx)
         root = Path(os.environ.get("GEMINI_MEDIA_ROOT", str(IMAGES_DIR))).expanduser().resolve()
@@ -685,6 +703,7 @@ class _AccountClientManager:
                 logger.warning("failed to close account-scoped Gemini client", exc_info=True)
         self.clients.clear()
         self.sessions.clear()
+        self._request_slots.clear()
 
     async def invalidate(self, ctx: Context, client) -> None:
         """Close and evict a timed-out client so its HTTP connection is not reused."""
@@ -1608,7 +1627,11 @@ async def gemini_chat(
                 return "Error: session_expired — start a new conversation with gemini_start_chat."
             chat = _conversation_session(ctx, row, client)
             try:
-                response = await asyncio.wait_for(chat.send_message(prompt), timeout=CHAT_TIMEOUT)
+                async with manager.request_slot(ctx):
+                    response = await asyncio.wait_for(
+                        chat.send_message(prompt, current_retry=UPSTREAM_RETRY_BUDGET),
+                        timeout=CHAT_TIMEOUT,
+                    )
             except asyncio.TimeoutError:
                 await manager.invalidate(ctx, client)
                 raise
@@ -1616,10 +1639,15 @@ async def gemini_chat(
             manager.conversations.update_metadata(subject, account, session_id, [chat.cid, chat.rid, chat.rcid])
         else:
             try:
-                response = await asyncio.wait_for(
-                    client.generate_content(prompt, model=model or DEFAULT_MODEL),
-                    timeout=CHAT_TIMEOUT,
-                )
+                async with manager.request_slot(ctx):
+                    response = await asyncio.wait_for(
+                        client.generate_content(
+                            prompt,
+                            model=model or DEFAULT_MODEL,
+                            current_retry=UPSTREAM_RETRY_BUDGET,
+                        ),
+                        timeout=CHAT_TIMEOUT,
+                    )
             except asyncio.TimeoutError:
                 await manager.invalidate(ctx, client)
                 raise
@@ -1767,11 +1795,14 @@ async def gemini_generate_image(
                         metadata=conversation_id,
                         model=model or "gemini-3.0-flash-thinking",
                     )
-                    gen_coro = chat.send_message(prompt, files=resolved_files or None)
+                    gen_coro = chat.send_message(
+                        prompt, files=resolved_files or None, current_retry=UPSTREAM_RETRY_BUDGET
+                    )
                 else:
                     kwargs = {"model": model or "gemini-3.0-flash-thinking"}
                     if resolved_files:
                         kwargs["files"] = resolved_files
+                    kwargs["current_retry"] = UPSTREAM_RETRY_BUDGET
                     gen_coro = client.generate_content(prompt, **kwargs)
                 # Hard cap: never let the library's stall-retry loop run for
                 # minutes when Gemini throttles the account. Fail fast instead.
@@ -1922,9 +1953,12 @@ async def gemini_upload_file(
             return f"Error: {exc}"
 
         client = await _get_client(ctx)
-        response = await client.generate_content(
-            prompt, model=model or DEFAULT_MODEL, files=[str(p)]
-        )
+        manager = ctx.request_context.lifespan_context["account_clients"]
+        async with manager.request_slot(ctx):
+            response = await client.generate_content(
+                prompt, model=model or DEFAULT_MODEL, files=[str(p)],
+                current_retry=UPSTREAM_RETRY_BUDGET,
+            )
         return response.text or "(empty response)"
 
     except Exception as e:
@@ -1964,9 +1998,11 @@ async def gemini_upload_file_bytes(
         temp_dir = Path(shutil.mkdtemp(prefix=f"gemini-upload-{account}-"))
         temp_path = temp_dir / safe_name
         temp_path.write_bytes(data)
-        response = await client.generate_content(
-            prompt, model=model or DEFAULT_MODEL, files=[str(temp_path)]
-        )
+        async with account_clients.request_slot(ctx):
+            response = await client.generate_content(
+                prompt, model=model or DEFAULT_MODEL, files=[str(temp_path)],
+                current_retry=UPSTREAM_RETRY_BUDGET,
+            )
         return response.text or "(empty response)"
     except ValueError as exc:
         return f"Error: {exc}"
@@ -2010,9 +2046,12 @@ async def gemini_analyze_url(
     try:
         client = await _get_client(ctx)
         full_prompt = f"{prompt}\n\n{url}"
-        response = await client.generate_content(
-            full_prompt, model=model or DEFAULT_MODEL
-        )
+        manager = ctx.request_context.lifespan_context["account_clients"]
+        async with manager.request_slot(ctx):
+            response = await client.generate_content(
+                full_prompt, model=model or DEFAULT_MODEL,
+                current_retry=UPSTREAM_RETRY_BUDGET,
+            )
         return response.text or "(empty response)"
     except Exception as e:
         return _handle_error(e)
