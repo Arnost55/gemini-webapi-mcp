@@ -24,6 +24,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from importlib.metadata import PackageNotFoundError, version as package_version
 from urllib.parse import parse_qsl, urlencode, quote, urlsplit, urlunsplit
 
 from mcp.server.fastmcp import FastMCP, Context
@@ -685,6 +686,20 @@ class _AccountClientManager:
         self.clients.clear()
         self.sessions.clear()
 
+    async def invalidate(self, ctx: Context, client) -> None:
+        """Close and evict a timed-out client so its HTTP connection is not reused."""
+        subject, record = self._account(ctx)
+        key = (subject, str(record["account"]))
+        async with self._lock:
+            current = self.clients.get(key)
+            if current is not client:
+                return
+            self.clients.pop(key, None)
+            try:
+                await asyncio.wait_for(client.close(), timeout=5)
+            except Exception:
+                logger.warning("timed-out Gemini client did not close cleanly for account %s", key[1])
+
 @asynccontextmanager
 async def app_lifespan(server):
     manager = _AccountClientManager()
@@ -698,6 +713,13 @@ async def app_lifespan(server):
 
 
 mcp = FastMCP("gemini-webapi-mcp", lifespan=app_lifespan)
+
+
+def _app_version() -> str:
+    try:
+        return package_version("gemini-webapi-mcp")
+    except PackageNotFoundError:
+        return os.environ.get("GEMINI_APP_VERSION", "0.0.0-dev")
 
 # The public reverse-proxy origin is expected to be configured explicitly.
 # Keep localhost entries for local development and add the configured host so
@@ -1003,6 +1025,37 @@ async def gemini_list_accounts(ctx: Context) -> dict:
     return {"accounts": DynamicAccountRegistry(path, key).list_safe(subject)}
 
 
+@mcp.tool(
+    name="gemini_server_info",
+    annotations={"title": "Gemini MCP Server Information", "readOnlyHint": True},
+)
+async def gemini_server_info() -> dict:
+    """Return non-sensitive build, protocol, capability, and schema metadata."""
+    tools = sorted(name for name in mcp._tool_manager._tools if name.startswith("gemini_"))
+    db_path = Path(os.environ.get(
+        "GEMINI_CONVERSATIONS_PATH", "/var/lib/gemini-mcp/conversations.sqlite3"
+    )).expanduser()
+    schema_version = 0
+    try:
+        import sqlite3
+        if db_path.is_file():
+            with sqlite3.connect(db_path, timeout=2) as db:
+                schema_version = int(db.execute("PRAGMA user_version").fetchone()[0])
+    except (OSError, sqlite3.Error):
+        schema_version = -1
+    return {
+        "application_version": _app_version(),
+        "build_commit": os.environ.get("GEMINI_BUILD_COMMIT") or os.environ.get("GITHUB_SHA") or "unknown",
+        "mcp_protocol_version": "2025-03-26",
+        "enabled_capabilities": [
+            "chat", "persistent_conversations", "image_generation", "image_editing",
+            "file_upload", "url_analysis", "model_discovery",
+        ],
+        "registered_tools": tools,
+        "conversation_schema_version": schema_version,
+    }
+
+
 @mcp.tool(name="gemini_select_account", annotations={"title": "Select Gemini Account"})
 async def gemini_select_account(account_id: str, ctx: Context) -> dict:
     """Set the requested account as the explicit account for a future session."""
@@ -1064,6 +1117,22 @@ def _conversation_session(ctx: Context, row: dict, client):
 
 def _get_media_dir(ctx: Context) -> Path:
     return ctx.request_context.lifespan_context["account_clients"].media_dir(ctx)
+
+
+def _native_image_content(path: str):
+    """Validate image bytes and return an MCP image with MIME from the bytes."""
+    from mcp.server.fastmcp.utilities.types import Image
+    from PIL import Image as PillowImage
+
+    raw = Path(path).read_bytes()
+    with PillowImage.open(Path(path)) as image:
+        image.verify()
+        image_format = (image.format or "").lower()
+    formats = {"jpeg": "jpeg", "jpg": "jpeg", "png": "png", "webp": "webp", "gif": "gif"}
+    normalized = formats.get(image_format)
+    if normalized is None:
+        raise ValueError("generated artifact has an unsupported image format")
+    return Image(data=raw, format=normalized)
 
 
 _UPLOAD_MIME_TYPES = {
@@ -1356,6 +1425,8 @@ def _handle_error(e: Exception) -> str:
         lowered = detail.lower()
         if "response stalled" in lowered or "zombie stream" in lowered:
             return "Error: upstream_stall — Gemini's stream stopped producing progress; the request was not retried by the MCP wrapper."
+        if ("not available" in lowered or "not enabled" in lowered or "upgrade" in lowered) and "pro" in lowered:
+            return f"Error: model_entitlement — Gemini Pro is not available to this account: {detail}"
         if "model" in lowered and ("unknown" in lowered or "invalid" in lowered):
             return f"Error: unsupported_model — {detail}"
         if "rate" in lowered or "too many requests" in lowered:
@@ -1536,14 +1607,22 @@ async def gemini_chat(
             except TimeoutError:
                 return "Error: session_expired — start a new conversation with gemini_start_chat."
             chat = _conversation_session(ctx, row, client)
-            response = await asyncio.wait_for(chat.send_message(prompt), timeout=CHAT_TIMEOUT)
+            try:
+                response = await asyncio.wait_for(chat.send_message(prompt), timeout=CHAT_TIMEOUT)
+            except asyncio.TimeoutError:
+                await manager.invalidate(ctx, client)
+                raise
             manager.conversations.add_messages(subject, account, session_id, [("user", prompt), ("assistant", response.text or "")])
             manager.conversations.update_metadata(subject, account, session_id, [chat.cid, chat.rid, chat.rcid])
         else:
-            response = await asyncio.wait_for(
-                client.generate_content(prompt, model=model or DEFAULT_MODEL),
-                timeout=CHAT_TIMEOUT,
-            )
+            try:
+                response = await asyncio.wait_for(
+                    client.generate_content(prompt, model=model or DEFAULT_MODEL),
+                    timeout=CHAT_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                await manager.invalidate(ctx, client)
+                raise
 
         text = response.text or "(empty response)"
         thoughts = response.thoughts
@@ -1699,6 +1778,7 @@ async def gemini_generate_image(
                 response = await asyncio.wait_for(gen_coro, timeout=GEN_TIMEOUT)
             except asyncio.TimeoutError:
                 logger.warning("generate_content exceeded %.0fs cap — aborting", GEN_TIMEOUT)
+                await ctx.request_context.lifespan_context["account_clients"].invalidate(ctx, client)
                 return (
                     f"Error: Gemini did not return an image within {GEN_TIMEOUT:.0f}s "
                     "via the library (the browser is usually faster). Try again."
@@ -1795,8 +1875,7 @@ async def gemini_generate_image(
             "conversation_id": conv_id,
         }
         try:
-            from mcp.server.fastmcp.utilities.types import Image
-            image_blocks = [Image(path=item["path"]) for item in saved if Path(item["path"]).is_file()]
+            image_blocks = [_native_image_content(item["path"]) for item in saved if Path(item["path"]).is_file()]
             if image_blocks:
                 return [json.dumps(result, ensure_ascii=False, indent=2), *image_blocks]
         except Exception:
