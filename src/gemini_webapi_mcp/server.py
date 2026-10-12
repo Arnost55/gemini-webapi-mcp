@@ -439,14 +439,27 @@ class _AccountClientManager:
 
     @staticmethod
     def _cookies(profile: Path) -> tuple[str, str | None]:
+        cookie_file = profile / "Default" / "Cookies"
+        local_state = profile / "Local State"
+        if not profile.is_dir():
+            raise RuntimeError("cookie_storage_missing: account profile directory is missing")
+        if not cookie_file.is_file():
+            raise RuntimeError("cookie_storage_missing: Chromium Cookies database is missing")
+        if not local_state.is_file():
+            raise RuntimeError("cookie_key_missing: Chromium Local State is missing")
+        if not os.access(cookie_file, os.R_OK) or not os.access(local_state, os.R_OK):
+            raise RuntimeError("cookie_storage_permission: Chromium cookie files are not readable")
         try:
             import browser_cookie3
             cookies = browser_cookie3.chrome(
-                cookie_file=str(profile / "Default" / "Cookies"),
-                key_file=str(profile / "Local State"),
+                cookie_file=str(cookie_file),
+                key_file=str(local_state),
             )
+        except ImportError as exc:
+            raise RuntimeError("cookie_reader_missing: browser-cookie3 is not installed") from exc
         except Exception as exc:
-            raise RuntimeError("cannot read cookies for the selected Gemini account") from exc
+            logger.warning("Chromium cookie reader failed for account profile: %s", type(exc).__name__)
+            raise RuntimeError("cookie_decryption_failed: Chromium cookie database could not be decrypted") from exc
         psid = psidts = None
         for cookie in cookies:
             domain = (cookie.domain or "").lstrip(".").lower()
