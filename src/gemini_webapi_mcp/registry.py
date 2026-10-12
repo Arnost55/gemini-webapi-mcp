@@ -35,7 +35,8 @@ def generate_key() -> str:
 
 def _decode_key(value: str) -> bytes:
     try:
-        key = base64.urlsafe_b64decode(value.encode("ascii"))
+        normalized = value.strip() + "=" * (-len(value.strip()) % 4)
+        key = base64.urlsafe_b64decode(normalized.encode("ascii"))
     except (ValueError, UnicodeError) as exc:
         raise ValueError("registry key must be URL-safe Base64") from exc
     if len(key) != 32:
