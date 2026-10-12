@@ -286,6 +286,42 @@ class BrowserHandoffBroker:
             self._write_tokens()
             return session
 
+    def verify(self, token: str) -> dict[str, object]:
+        """Read the live Chromium profile and refresh safe handoff status."""
+        with self._lock:
+            session = self._sessions.get(token)
+            if session is None or session.expires_at <= time.time():
+                return {"state": "expired", "ready": False, "expires_at": 0}
+            state = self.status(token)
+            try:
+                import browser_cookie3
+                cookies = browser_cookie3.chrome(
+                    cookie_file=str(Path(session.profile) / "Default" / "Cookies"),
+                    domain_name="gemini.google.com",
+                )
+                names = {cookie.name for cookie in cookies if cookie.value}
+                has_psid = "__Secure-1PSID" in names
+                has_psidts = "__Secure-1PSIDTS" in names
+                if has_psid:
+                    state["state"] = "ready"
+                    state["ready"] = True
+                    state["has_psid"] = True
+                    state["has_psidts"] = has_psidts
+                    state.pop("error", None)
+            except Exception:
+                # Chrome may briefly lock the cookie database while writing it.
+                # Preserve the previous safe state and let polling retry.
+                pass
+            temporary = Path(session.status_file).with_suffix(".tmp")
+            temporary.write_text(json.dumps({
+                "state": state.get("state", "starting"),
+                "has_psid": bool(state.get("has_psid", False)),
+                "has_psidts": bool(state.get("has_psidts", False)),
+            }, separators=(",", ":")) + "\n", encoding="utf-8")
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, session.status_file)
+            return state
+
     def browser_url(self, session: BrowserHandoff) -> str:
         if not self.public_url:
             return ""
