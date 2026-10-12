@@ -14,6 +14,7 @@ import os
 import random
 import re
 import string
+import shutil
 import sys
 import time
 import uuid
@@ -391,6 +392,7 @@ class _AccountClientManager:
         self._cookie_pairs: dict[tuple[str, str], tuple[str, str | None]] = {}
         self._profiles: dict[tuple[str, str], Path] = {}
         self._refresh_task: asyncio.Task | None = None
+        self._maintenance_task: asyncio.Task | None = None
 
     def _allow_request(self, subject: str, account: str, requests_per_minute: int) -> None:
         now = time.monotonic()
@@ -490,9 +492,42 @@ class _AccountClientManager:
             await asyncio.sleep(interval)
             await self.refresh_cookies()
 
+    async def _maintain_browser_profile(self, profile: Path) -> None:
+        executable = os.environ.get("GEMINI_BROWSER_EXECUTABLE") or shutil.which("google-chrome") or shutil.which("google-chrome-stable")
+        if not executable:
+            return
+        command = [
+            executable, f"--user-data-dir={profile}", "--profile-directory=Default",
+            "--password-store=basic", "--headless=new", "--no-first-run",
+            "--no-default-browser-check", "--disable-gpu", "https://gemini.google.com/app",
+        ]
+        process = await asyncio.create_subprocess_exec(
+            *command, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            await asyncio.wait_for(process.wait(), timeout=20)
+        except asyncio.TimeoutError:
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                process.kill()
+
+    async def _maintenance_loop(self) -> None:
+        interval = max(86400, int(os.environ.get("GEMINI_BROWSER_MAINTENANCE_SECONDS", "259200")))
+        while True:
+            await asyncio.sleep(interval)
+            for profile in set(self._profiles.values()):
+                try:
+                    await self._maintain_browser_profile(profile)
+                except Exception:
+                    logger.warning("Chromium profile maintenance failed", exc_info=True)
+
     def start_refresh_loop(self) -> None:
         if self._refresh_task is None:
             self._refresh_task = asyncio.create_task(self._refresh_loop())
+        if self._maintenance_task is None:
+            self._maintenance_task = asyncio.create_task(self._maintenance_loop())
 
     async def get(self, ctx: Context):
         from gemini_webapi import GeminiClient
@@ -524,6 +559,13 @@ class _AccountClientManager:
         return account_dir
 
     async def close(self) -> None:
+        if self._maintenance_task is not None:
+            self._maintenance_task.cancel()
+            try:
+                await self._maintenance_task
+            except asyncio.CancelledError:
+                pass
+            self._maintenance_task = None
         if self._refresh_task is not None:
             self._refresh_task.cancel()
             try:
