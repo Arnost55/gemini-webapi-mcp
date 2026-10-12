@@ -272,7 +272,7 @@ class BrowserHandoffBroker:
             try:
                 for command in commands:
                     processes.append(self._runner(command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))
-                    if self._runner is subprocess.Popen and "x11vnc" in command[-1]:
+                    if self._runner is subprocess.Popen and any("x11vnc" in part for part in command):
                         self._wait_for_vnc(vnc_port)
                     self._write_manifest(session)
             except Exception:
