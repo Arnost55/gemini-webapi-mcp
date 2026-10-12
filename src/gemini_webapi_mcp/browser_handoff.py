@@ -294,13 +294,30 @@ class BrowserHandoffBroker:
                 return {"state": "expired", "ready": False, "expires_at": 0}
             state = self.status(token)
             try:
-                import browser_cookie3
-                cookies = browser_cookie3.chrome(
-                    cookie_file=str(Path(session.profile) / "Default" / "Cookies"),
-                    key_file=str(Path(session.profile) / "Local State"),
-                    domain_name="gemini.google.com",
-                )
-                names = {cookie.name for cookie in cookies if cookie.value}
+                cookie_file = Path(session.profile) / "Default" / "Cookies"
+                local_state = Path(session.profile) / "Local State"
+                reader = os.environ.get("GEMINI_ACCOUNT_COOKIE_READER", "basic").lower()
+                if reader == "basic":
+                    # Handoffs use Chromium's basic password store. Avoid
+                    # browser-cookie3's SecretService/KWallet probing, which
+                    # produces misleading KeyError warnings on headless hosts.
+                    from .server import _read_basic_chromium_cookies
+
+                    cookies = _read_basic_chromium_cookies(cookie_file)
+                    names = {
+                        name
+                        for domain, name, value in cookies
+                        if value and (domain or "").lstrip(".").lower().endswith("google.com")
+                    }
+                else:
+                    import browser_cookie3
+
+                    cookies = browser_cookie3.chrome(
+                        cookie_file=str(cookie_file),
+                        key_file=str(local_state),
+                        domain_name="gemini.google.com",
+                    )
+                    names = {cookie.name for cookie in cookies if cookie.value}
                 has_psid = "__Secure-1PSID" in names
                 has_psidts = "__Secure-1PSIDTS" in names
                 if has_psid:
