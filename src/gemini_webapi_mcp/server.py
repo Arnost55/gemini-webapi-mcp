@@ -441,12 +441,14 @@ class _AccountClientManager:
             import browser_cookie3
             cookies = browser_cookie3.chrome(
                 cookie_file=str(profile / "Default" / "Cookies"),
-                domain_name="gemini.google.com",
             )
         except Exception as exc:
             raise RuntimeError("cannot read cookies for the selected Gemini account") from exc
         psid = psidts = None
         for cookie in cookies:
+            domain = (cookie.domain or "").lstrip(".").lower()
+            if not domain.endswith("google.com"):
+                continue
             if cookie.name == "__Secure-1PSID" and cookie.value:
                 psid = cookie.value
             elif cookie.name == "__Secure-1PSIDTS" and cookie.value:
