@@ -205,11 +205,7 @@ class BrowserHandoffBroker:
         used_displays = {item.display for item in self._sessions.values()}
         used_ports = {item.vnc_port for item in self._sessions.values()}
         number = 0
-        while (
-            self.display_start + number in used_displays
-            or self.vnc_port_start + number in used_ports
-            or self._tcp_port_listening(self.vnc_port_start + number)
-        ):
+        while self.display_start + number in used_displays or self.vnc_port_start + number in used_ports:
             number += 1
         return self.display_start + number, self.vnc_port_start + number
 
