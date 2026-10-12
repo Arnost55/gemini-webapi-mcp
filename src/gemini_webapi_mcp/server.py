@@ -462,6 +462,8 @@ class _AccountClientManager:
         self._profiles: dict[tuple[str, str], Path] = {}
         self._refresh_task: asyncio.Task | None = None
         self._maintenance_task: asyncio.Task | None = None
+        from .conversations import ConversationStore
+        self.conversations = ConversationStore()
 
     def _allow_request(self, subject: str, account: str, requests_per_minute: int) -> None:
         now = time.monotonic()
@@ -636,6 +638,10 @@ class _AccountClientManager:
     def session_key(self, ctx: Context, session_id: str) -> tuple[str, str, str]:
         subject, record = self._account(ctx)
         return subject, str(record["account"]), session_id
+
+    def conversation_owner(self, ctx: Context) -> tuple[str, str]:
+        subject, record = self._account(ctx)
+        return subject, str(record["account"])
 
     def media_dir(self, ctx: Context) -> Path:
         _, record = self._account(ctx)
@@ -1040,6 +1046,14 @@ def _get_sessions(ctx: Context) -> dict:
     return ctx.request_context.lifespan_context["account_clients"].sessions
 
 
+def _conversation_session(ctx: Context, row: dict, client):
+    """Reconstruct an upstream ChatSession from persisted Gemini metadata."""
+    metadata = [row.get("cid"), row.get("rid"), row.get("rcid")]
+    if not any(metadata):
+        return client.start_chat(model=row["model"])
+    return client.start_chat(metadata=metadata, model=row["model"])
+
+
 def _get_media_dir(ctx: Context) -> Path:
     return ctx.request_context.lifespan_context["account_clients"].media_dir(ctx)
 
@@ -1404,13 +1418,14 @@ async def gemini_start_chat(
     """
     try:
         client = await _get_client(ctx)
-        chat = client.start_chat(model=model or DEFAULT_MODEL)
-        session_id = str(uuid.uuid4())[:8]
         manager = ctx.request_context.lifespan_context["account_clients"]
-        _get_sessions(ctx)[manager.session_key(ctx, session_id)] = chat
+        subject, account = manager.conversation_owner(ctx)
+        selected_model = model or DEFAULT_MODEL
+        session_id = manager.conversations.create(subject, account, selected_model)
         return json.dumps({
             "session_id": session_id,
-            "model": model or DEFAULT_MODEL,
+            "model": selected_model,
+            "persistent": True,
             "message": f"Chat session started. Use session_id '{session_id}' in gemini_chat.",
         })
     except Exception as e:
@@ -1449,13 +1464,19 @@ async def gemini_chat(
     try:
         client = await _get_client(ctx)
 
+        manager = ctx.request_context.lifespan_context["account_clients"]
+        subject, account = manager.conversation_owner(ctx)
         if session_id:
-            manager = ctx.request_context.lifespan_context["account_clients"]
-            sessions = _get_sessions(ctx)
-            chat = sessions.get(manager.session_key(ctx, session_id))
-            if not chat:
-                return f"Error: Session '{session_id}' not found. Start a new one with gemini_start_chat."
+            try:
+                row = manager.conversations.get(subject, account, session_id)
+            except KeyError:
+                return "Error: session_not_found — start a new conversation with gemini_start_chat."
+            except TimeoutError:
+                return "Error: session_expired — start a new conversation with gemini_start_chat."
+            chat = _conversation_session(ctx, row, client)
             response = await chat.send_message(prompt)
+            manager.conversations.add_messages(subject, account, session_id, [("user", prompt), ("assistant", response.text or "")])
+            manager.conversations.update_metadata(subject, account, session_id, [chat.cid, chat.rid, chat.rcid])
         else:
             response = await client.generate_content(
                 prompt, model=model or DEFAULT_MODEL
@@ -1468,6 +1489,67 @@ async def gemini_chat(
         return text
     except Exception as e:
         return _handle_error(e)
+
+
+@mcp.tool(name="gemini_list_chats", annotations={"title": "List Gemini Conversations", "readOnlyHint": True})
+async def gemini_list_chats(ctx: Context, limit: int = 50) -> dict:
+    manager = ctx.request_context.lifespan_context["account_clients"]
+    subject, account = manager.conversation_owner(ctx)
+    return {"conversations": manager.conversations.list(subject, account, limit)}
+
+
+@mcp.tool(name="gemini_get_chat", annotations={"title": "Get Gemini Conversation", "readOnlyHint": True})
+async def gemini_get_chat(session_id: str, ctx: Context) -> dict:
+    manager = ctx.request_context.lifespan_context["account_clients"]
+    subject, account = manager.conversation_owner(ctx)
+    try:
+        return manager.conversations.get(subject, account, session_id)
+    except KeyError:
+        return {"error": "session_not_found"}
+    except TimeoutError:
+        return {"error": "session_expired"}
+
+
+@mcp.tool(name="gemini_get_chat_history", annotations={"title": "Get Local Gemini Conversation History", "readOnlyHint": True})
+async def gemini_get_chat_history(session_id: str, ctx: Context, limit: int = 100) -> dict:
+    manager = ctx.request_context.lifespan_context["account_clients"]
+    subject, account = manager.conversation_owner(ctx)
+    try:
+        return {"session_id": session_id, "source": "local_mcp_history", "messages": manager.conversations.history(subject, account, session_id, limit)}
+    except KeyError:
+        return {"error": "session_not_found"}
+    except TimeoutError:
+        return {"error": "session_expired"}
+
+
+@mcp.tool(name="gemini_delete_chat", annotations={"title": "Delete Local Gemini Conversation", "readOnlyHint": False})
+async def gemini_delete_chat(session_id: str, ctx: Context) -> dict:
+    manager = ctx.request_context.lifespan_context["account_clients"]
+    subject, account = manager.conversation_owner(ctx)
+    try:
+        manager.conversations.delete(subject, account, session_id)
+        return {"deleted": session_id}
+    except KeyError:
+        return {"error": "session_not_found"}
+    except TimeoutError:
+        return {"error": "session_expired"}
+
+
+@mcp.tool(name="gemini_switch_model", annotations={"title": "Switch Conversation Model", "readOnlyHint": False})
+async def gemini_switch_model(session_id: str, model: str, ctx: Context) -> dict:
+    """Change the model used when reconstructing a persisted conversation."""
+    if not model or len(model) > 128:
+        return {"error": "unsupported_model", "message": "A non-empty model identifier is required."}
+    manager = ctx.request_context.lifespan_context["account_clients"]
+    subject, account = manager.conversation_owner(ctx)
+    try:
+        row = manager.conversations.get(subject, account, session_id)
+        manager.conversations.update_model(subject, account, session_id, model)
+        return {"session_id": session_id, "model": model, "upstream_conversation_preserved": bool(row.get("cid"))}
+    except KeyError:
+        return {"error": "session_not_found"}
+    except TimeoutError:
+        return {"error": "session_expired"}
 
 
 @mcp.tool(
