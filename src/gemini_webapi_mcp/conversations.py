@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import secrets
 import sqlite3
@@ -36,6 +35,7 @@ class ConversationStore:
         with self._lock, self._connect() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("PRAGMA synchronous=NORMAL")
+            version = db.execute("PRAGMA user_version").fetchone()[0]
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS conversations (
                     session_id TEXT PRIMARY KEY,
@@ -62,6 +62,8 @@ class ConversationStore:
                 CREATE INDEX IF NOT EXISTS idx_messages_session
                     ON conversation_messages(session_id, id);
             """)
+            if version < 1:
+                db.execute("PRAGMA user_version=1")
 
     def create(self, subject: str, account: str, model: str) -> str:
         now = time.time()
@@ -121,12 +123,12 @@ class ConversationStore:
                        (now, now + self.ttl_seconds, session_id))
             db.commit()
 
-    def list(self, subject: str, account: str, limit: int = 50) -> list[dict]:
+    def list(self, subject: str, account: str, limit: int = 50, offset: int = 0) -> list[dict]:
         with self._lock, self._connect() as db:
             self.cleanup(db)
             return [dict(row) for row in db.execute(
-                "SELECT * FROM conversations WHERE subject=? AND account=? AND closed_at IS NULL ORDER BY updated_at DESC LIMIT ?",
-                (subject, account, max(1, min(limit, 100))),
+                "SELECT * FROM conversations WHERE subject=? AND account=? AND closed_at IS NULL ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                (subject, account, max(1, min(limit, 100)), max(0, offset)),
             )]
 
     def history(self, subject: str, account: str, session_id: str, limit: int = 100) -> list[dict]:
