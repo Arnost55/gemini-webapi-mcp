@@ -1,6 +1,7 @@
 import base64
 import asyncio
 import json
+import io
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,8 @@ from gemini_webapi_mcp.server import mcp
 from gemini_webapi_mcp.server import (
     _decode_upload_bytes,
     _handle_error,
+    _native_image_content,
+    gemini_server_info,
     _validate_upload_path,
 )
 
@@ -127,6 +130,36 @@ def test_zombie_stream_is_structured_without_model_substitution():
     result = _handle_error(APIError("Response stalled (zombie stream)."))
     assert result.startswith("Error: upstream_stall")
     assert "unsupported_model" not in result
+
+
+def test_pro_entitlement_error_is_not_reported_as_success():
+    from gemini_webapi import APIError
+
+    result = _handle_error(APIError("gemini-3.0-pro is not available for this account"))
+    assert result.startswith("Error: model_entitlement")
+
+
+def test_image_mime_is_derived_from_actual_bytes(tmp_path):
+    from PIL import Image as PillowImage
+    from mcp.server.fastmcp.utilities.func_metadata import _convert_to_content
+
+    path = tmp_path / "misleading.png"
+    PillowImage.new("RGB", (2, 2), (20, 30, 40)).save(path, format="JPEG")
+    block = _native_image_content(str(path))
+    content = _convert_to_content(block)[0]
+    raw = base64.b64decode(content.data)
+    assert content.mimeType == "image/jpeg"
+    assert raw[:2] == b"\xff\xd8"
+    with PillowImage.open(io.BytesIO(raw)) as decoded:
+        assert decoded.format == "JPEG"
+
+
+def test_server_info_is_non_sensitive_and_reports_registered_tools():
+    info = asyncio.run(gemini_server_info())
+    assert info["mcp_protocol_version"] == "2025-03-26"
+    assert "gemini_server_info" in info["registered_tools"]
+    assert "__Secure-1PSID" not in repr(info)
+    assert "cookies" not in repr(info).lower()
 
 
 def test_upload_path_validation_rejects_unknown_type(tmp_path):
