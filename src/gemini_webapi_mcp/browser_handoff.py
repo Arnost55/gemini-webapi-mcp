@@ -164,6 +164,28 @@ class BrowserHandoffBroker:
             except (OSError, ProcessLookupError):
                 return
 
+    @staticmethod
+    def _tcp_port_listening(port: int) -> bool:
+        """Check a local TCP listener without requiring ss or netstat."""
+        needle = f":{port:04X}"
+        for proc_path in ("/proc/net/tcp", "/proc/net/tcp6"):
+            try:
+                lines = Path(proc_path).read_text(encoding="ascii").splitlines()[1:]
+            except OSError:
+                continue
+            if any(len(fields) >= 4 and fields[1].startswith(needle) and fields[3] == "0A" for fields in (line.split() for line in lines)):
+                return True
+        return False
+
+    def _wait_for_vnc(self, port: int, timeout: float = 10.0) -> None:
+        """Wait until x11vnc accepts connections before publishing a capability."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self._tcp_port_listening(port):
+                return
+            time.sleep(0.1)
+        raise RuntimeError(f"x11vnc did not listen on TCP port {port} within {timeout:g}s")
+
     def _write_tokens(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         # TokenFile deliberately reloads this text format for every websocket:
@@ -250,6 +272,8 @@ class BrowserHandoffBroker:
             try:
                 for command in commands:
                     processes.append(self._runner(command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))
+                    if self._runner is subprocess.Popen and "x11vnc" in command[-1]:
+                        self._wait_for_vnc(vnc_port)
                     self._write_manifest(session)
             except Exception:
                 for process in processes:
