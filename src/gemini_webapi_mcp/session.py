@@ -240,7 +240,7 @@ class GeminiSessionManager:
         """Refresh cookie presence from the live Chrome profile, never values."""
         try:
             import browser_cookie3
-            cookies = browser_cookie3.chrome(cookie_file=str(self.profile_dir / "Default" / "Cookies"), domain_name="gemini.google.com")
+            cookies = browser_cookie3.chrome(cookie_file=str(self.profile_dir / "Default" / "Cookies"), key_file=str(self.profile_dir / "Local State"), domain_name="gemini.google.com")
             names = {cookie.name for cookie in cookies if cookie.value}
             has_psid = "__Secure-1PSID" in names
             has_psidts = "__Secure-1PSIDTS" in names
