@@ -375,6 +375,75 @@ def _make_gen_id() -> str:
 # Account-scoped client lifecycle
 # ---------------------------------------------------------------------------
 
+def _read_basic_chromium_cookies(cookie_file: Path) -> list[tuple[str, str, str]]:
+    """Read Google cookies from Chromium's Linux basic-password-store DB.
+
+    Returns only (domain, name, value); values are never logged.  Chromium's
+    v10 format uses PBKDF2-HMAC-SHA1("peanuts", "saltysalt", 1) and AES-CBC.
+    The database is copied first so a live Chromium process can keep its WAL
+    and lock files without exposing the application to partial reads.
+    """
+    import hashlib
+    import shutil
+    import sqlite3
+    import tempfile
+
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    tmp_name = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix="gemini-cookies-", suffix=".db", delete=False) as tmp:
+            tmp_name = tmp.name
+        shutil.copyfile(cookie_file, tmp_name)
+        db = sqlite3.connect(f"file:{tmp_name}?mode=ro", uri=True)
+        try:
+            rows = db.execute(
+                "SELECT host_key, name, encrypted_value, value FROM cookies"
+            ).fetchall()
+        finally:
+            db.close()
+    except (OSError, sqlite3.Error) as exc:
+        raise RuntimeError("cookie_storage_unreadable: Chromium cookie database could not be opened") from exc
+    finally:
+        if tmp_name:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+
+    key = hashlib.pbkdf2_hmac("sha1", b"peanuts", b"saltysalt", 1, dklen=16)
+    iv = b" " * 16
+    result = []
+    for domain, name, encrypted, plain in rows:
+        if not domain or not domain.lstrip(".").lower().endswith("google.com"):
+            continue
+        value = plain or ""
+        if encrypted:
+            blob = bytes(encrypted)
+            if not blob.startswith(b"v10"):
+                continue
+            try:
+                payload = blob[3:]
+                decrypted = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
+                decoded = decrypted.update(payload) + decrypted.finalize()
+                padding = decoded[-1]
+                if not 1 <= padding <= 16 or decoded[-padding:] != bytes([padding]) * padding:
+                    continue
+                decoded = decoded[:-padding]
+                # Chromium cookie schema v24+ prefixes encrypted values with
+                # a 32-byte SHA256(host_key) value. Accept both old and new DBs.
+                if len(decoded) >= 32 and decoded[:32] == hashlib.sha256(domain.encode()).digest():
+                    decoded = decoded[32:]
+                value = decoded.decode("utf-8")
+            except Exception:
+                continue
+        if value and name in {"__Secure-1PSID", "__Secure-1PSIDTS"}:
+            result.append((domain, name, value))
+    if not result:
+        raise RuntimeError("cookie_decryption_failed: Chromium cookie database could not be decrypted")
+    return result
+
+
 class _AccountClientManager:
     """Create and cache Gemini clients only after account authorization.
 
@@ -458,17 +527,25 @@ class _AccountClientManager:
         except ImportError as exc:
             raise RuntimeError("cookie_reader_missing: browser-cookie3 is not installed") from exc
         except Exception as exc:
-            logger.warning("Chromium cookie reader failed for account profile: %s", type(exc).__name__)
-            raise RuntimeError("cookie_decryption_failed: Chromium cookie database could not be decrypted") from exc
+            # On Linux browser-cookie3 tries SecretService/KWallet and ignores
+            # key_file.  The session launcher deliberately uses Chromium's
+            # --password-store=basic, whose v10 cookies use Chromium's stable
+            # "peanuts" key and do not require a desktop keyring.
+            logger.info("browser-cookie3 could not read Chromium cookies: %s", type(exc).__name__)
+            cookies = _read_basic_chromium_cookies(cookie_file)
         psid = psidts = None
         for cookie in cookies:
-            domain = (cookie.domain or "").lstrip(".").lower()
+            if isinstance(cookie, tuple):
+                raw_domain, name, value = cookie
+            else:
+                raw_domain, name, value = cookie.domain, cookie.name, cookie.value
+            domain = (raw_domain or "").lstrip(".").lower()
             if not domain.endswith("google.com"):
                 continue
-            if cookie.name == "__Secure-1PSID" and cookie.value:
-                psid = cookie.value
-            elif cookie.name == "__Secure-1PSIDTS" and cookie.value:
-                psidts = cookie.value
+            if name == "__Secure-1PSID" and value:
+                psid = value
+            elif name == "__Secure-1PSIDTS" and value:
+                psidts = value
         if not psid:
             raise RuntimeError("selected Gemini account is not logged in")
         return psid, psidts
