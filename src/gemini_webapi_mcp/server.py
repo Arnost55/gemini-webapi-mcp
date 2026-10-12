@@ -792,7 +792,7 @@ async def browser_verify(request: Request):
     sid = request.query_params.get("sid", "")
     if not sid or len(sid) > 128:
         return JSONResponse({"error": "invalid browser handoff"}, status_code=400)
-    state = _handoff_broker.status(sid)
+    state = _handoff_broker.verify(sid)
     if state["state"] == "expired":
         return JSONResponse(state, status_code=410, headers={"Cache-Control": "no-store"})
     return JSONResponse(state, headers={"Cache-Control": "no-store"})
