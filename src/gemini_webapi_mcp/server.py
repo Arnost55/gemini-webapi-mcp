@@ -9,6 +9,7 @@ browser cookies (__Secure-1PSID and __Secure-1PSIDTS).
 import asyncio
 import base64
 from collections import deque
+import hashlib
 import json
 import logging
 import mimetypes
@@ -796,6 +797,7 @@ def _viewer_ws_url() -> str:
 
 
 def _new_browser_handoff(subject: str = "", account: str = "") -> tuple[str, str]:
+    account = _account_name_for_login(subject, account)
     handoff = _handoff_broker.create(owner_subject=subject, account=account)
     public = os.environ.get("GEMINI_PUBLIC_URL", "").rstrip("/")
     if public:
@@ -818,6 +820,37 @@ def _configured_registry_key() -> str | None:
         return None
 
 
+def _account_name_for_login(subject: str, proposed: str) -> str:
+    """Reuse an owned selection; otherwise derive a stable account name.
+
+    Earlier OAuth flows appended a random authorization-code suffix to every
+    login, so reauthenticating the same MCP identity created another registry
+    entry. Existing selected accounts remain authoritative; new identities get
+    a deterministic opaque name rather than a per-login name.
+    """
+    path = os.environ.get("GEMINI_REGISTRY_PATH")
+    key = _configured_registry_key()
+    if not path or not key:
+        return proposed
+    try:
+        from .registry import DynamicAccountRegistry
+
+        registry = DynamicAccountRegistry(path, key)
+        selected = registry.selection(subject)
+        if selected:
+            return selected
+        ready = [item["account"] for item in registry.list_safe(subject) if item.get("state") == "ready"]
+        if len(ready) == 1:
+            registry.select(subject, ready[0])
+            return ready[0]
+    except Exception:
+        # Registration will report the underlying failure later; do not
+        # silently substitute another account here.
+        logger.info("could not resolve an existing Gemini account selection")
+    stable = hashlib.sha256(subject.encode("utf-8")).hexdigest()[:20]
+    return f"gemini-{stable}"
+
+
 def _consume_browser_handoff(token: str, subject: str, account: str) -> None:
     """Promote one completed browser profile into its owner-bound account."""
     from .registry import DynamicAccountRegistry
@@ -833,6 +866,7 @@ def _consume_browser_handoff(token: str, subject: str, account: str) -> None:
     except ValueError as exc:
         raise PermissionError("invalid Gemini account profile name") from exc
     registry = DynamicAccountRegistry(registry_path, registry_key)
+    account = _account_name_for_login(subject, account)
     registry.register(
         subject=subject,
         account=account,
@@ -1061,6 +1095,117 @@ async def gemini_list_accounts(ctx: Context) -> dict:
         return {"accounts": [], "warning": "account_registry_not_configured"}
     subject = _oauth_subject(ctx)
     return {"accounts": DynamicAccountRegistry(path, key).list_safe(subject)}
+
+
+@mcp.tool(
+    name="gemini_account_diagnostics",
+    annotations={"title": "Inspect Gemini Account Health", "readOnlyHint": True},
+)
+async def gemini_account_diagnostics(ctx: Context, account_id: Optional[str] = None) -> dict:
+    """Return sanitized account/profile references without exposing credentials."""
+    from .registry import DynamicAccountRegistry
+
+    path = os.environ.get("GEMINI_REGISTRY_PATH")
+    key = _configured_registry_key()
+    if not path or not key:
+        return {"error": "account_registry_not_configured"}
+    subject = _oauth_subject(ctx)
+    registry = DynamicAccountRegistry(path, key)
+    records = registry.list_safe(subject)
+    if account_id:
+        records = [record for record in records if record["account"] == account_id]
+        if not records:
+            return {"error": "account_not_found"}
+    selected = registry.selection(subject)
+    manager = ctx.request_context.lifespan_context["account_clients"]
+    root = Path(os.environ.get("GEMINI_PROFILE_ROOT", "/var/lib/gemini-mcp/accounts")).expanduser().resolve()
+    result = []
+    for record in records:
+        account = str(record["account"])
+        profile = Path(str(record.get("profile") or account)).expanduser()
+        if not profile.is_absolute():
+            profile = root / profile
+        try:
+            profile = profile.resolve()
+            profile.relative_to(root)
+            profile_exists = profile.is_dir()
+        except ValueError:
+            profile_exists = False
+        credentials_available = False
+        identity_fingerprint = None
+        credential_error = None
+        if profile_exists:
+            try:
+                psid, _ = manager._cookies(profile)
+                credentials_available = bool(psid)
+                if psid:
+                    identity_fingerprint = hashlib.sha256(psid.encode("utf-8")).hexdigest()[:16]
+            except Exception as exc:
+                credential_error = type(exc).__name__
+        result.append({
+            "account_suffix": account[-12:],
+            "account": account,
+            "record_source": "encrypted_registry",
+            "created_at": record.get("created_at"),
+            "updated_at": record.get("updated_at"),
+            "profile_exists": profile_exists,
+            "credentials_available": credentials_available,
+            "authentication_verified": "not_tested",
+            "google_identity_fingerprint": identity_fingerprint,
+            "credential_error_category": credential_error,
+            "referenced_conversations": manager.conversations.count_for_account(subject, account),
+            "active_session_references": sum(
+                1 for key in manager.sessions if key[:2] == (subject, account)
+            ),
+            "selected": account == selected,
+            "state": record.get("state"),
+            "suspected_duplicate": False,
+        })
+    fingerprints = [item["google_identity_fingerprint"] for item in result if item["google_identity_fingerprint"]]
+    for item in result:
+        item["suspected_duplicate"] = bool(
+            item["google_identity_fingerprint"] and fingerprints.count(item["google_identity_fingerprint"]) > 1
+        )
+    return {"accounts": result, "selected_account": selected}
+
+
+@mcp.tool(
+    name="gemini_deactivate_account",
+    annotations={"title": "Deactivate Gemini Account", "readOnlyHint": False},
+)
+async def gemini_deactivate_account(
+    account_id: str,
+    confirm_account_id: str,
+    ctx: Context,
+) -> dict:
+    """Disable one exact account without deleting its profile or conversations."""
+    if not account_id or confirm_account_id != account_id:
+        return {
+            "error": "confirmation_required",
+            "message": "Pass the exact account_id again as confirm_account_id. No profile or conversation is deleted.",
+        }
+    from .registry import DynamicAccountRegistry
+
+    path = os.environ.get("GEMINI_REGISTRY_PATH")
+    key = _configured_registry_key()
+    if not path or not key:
+        return {"error": "account_registry_not_configured"}
+    subject = _oauth_subject(ctx)
+    registry = DynamicAccountRegistry(path, key)
+    owned = [item for item in registry.list_safe(subject) if item["account"] == account_id]
+    if not owned:
+        return {"error": "account_not_found"}
+    manager = ctx.request_context.lifespan_context["account_clients"]
+    conversations = manager.conversations.count_for_account(subject, account_id)
+    active_sessions = sum(1 for key in manager.sessions if key[:2] == (subject, account_id))
+    registry.set_state(account_id, "disabled")
+    return {
+        "deactivated": account_id,
+        "profile_deleted": False,
+        "conversations_deleted": False,
+        "referenced_conversations": conversations,
+        "active_session_references": active_sessions,
+    }
 
 
 @mcp.tool(
@@ -1462,7 +1607,11 @@ def _handle_error(e: Exception) -> str:
         detail = str(e)
         lowered = detail.lower()
         if "response stalled" in lowered or "zombie stream" in lowered:
-            return "Error: upstream_stall — Gemini's stream stopped producing progress; the request was not retried by the MCP wrapper."
+            return "Error: upstream_stall — Gemini's stream stopped producing progress; no model substitution was attempted."
+        if "truncated" in lowered or "stream interrupted" in lowered:
+            return f"Error: stream_interrupted — Gemini closed or truncated the response before a complete frame arrived: {detail}"
+        if "connection" in lowered and ("closed" in lowered or "reset" in lowered):
+            return f"Error: upstream_connection_closed — Gemini closed the response connection: {detail}"
         if ("not available" in lowered or "not enabled" in lowered or "upgrade" in lowered) and "pro" in lowered:
             return f"Error: model_entitlement — Gemini Pro is not available to this account: {detail}"
         if "model" in lowered and ("unknown" in lowered or "invalid" in lowered):
