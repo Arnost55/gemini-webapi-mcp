@@ -124,6 +124,17 @@ never stores cookie values in logs or MCP results.
 
 ### Persistent browser session
 
+Generated images are returned as MCP image content when the saved PNG/JPEG is
+available, in addition to the compatibility metadata response. The server
+keeps the output under the configured account media directory and does not
+expose arbitrary filesystem paths. Model capability responses include whether
+an entry was observed from the client or is a low-confidence fallback.
+
+Chat requests use bounded timeouts. Configure `GEMINI_CHAT_TIMEOUT`,
+`GEMINI_CLIENT_TIMEOUT`, and `GEMINI_WATCHDOG_TIMEOUT` when a deployment needs
+different limits. A stalled upstream stream is reported as `upstream_stall`;
+the server never substitutes another model after a stall.
+
 Chat sessions are stored in the persistent state volume at
 `/var/lib/gemini-mcp/conversations.sqlite3` by default. The store uses SQLite
 WAL mode, account-scopes every lookup, and records local message history plus
@@ -453,6 +464,7 @@ The only calibrated invariant is the star shape in `src/gemini_webapi_mcp/assets
 |------|-------------|
 | `gemini_generate_image` | Generate new or edit existing images |
 | `gemini_upload_file` | Analyze files — video, images, PDF, documents |
+| `gemini_upload_file_bytes` | Analyze caller-supplied base64 file bytes when paths are not shared with the container |
 | `gemini_analyze_url` | Analyze URLs — YouTube videos, webpages, articles |
 | `gemini_chat` | Text chat (single or multi-turn) |
 | `gemini_start_chat` | Start a multi-turn session |
@@ -486,7 +498,15 @@ gemini_generate_image(prompt="make it gray", files=["/path/to/cat.png"])
 gemini_generate_image(prompt="make the background darker", conversation_id=["c_abc", "r_123", "rc_456"])
 gemini_analyze_url(url="https://youtube.com/watch?v=...", prompt="Summarize this video")
 gemini_upload_file(file_path="/path/to/doc.pdf", prompt="Summarize key points")
+# When the caller cannot share its filesystem, send bounded base64 file bytes:
+gemini_upload_file_bytes(filename="doc.pdf", data_base64="<base64>", prompt="Summarize key points")
 ```
+
+`gemini_upload_file` is retained for deployments where the path exists inside
+the MCP container. `gemini_upload_file_bytes` strips directory components,
+enforces `GEMINI_MAX_UPLOAD_BYTES` and the same MIME allowlist, stores the
+decoded bytes in a private temporary directory for one request, and removes
+them afterward. It does not provide arbitrary host-file access.
 
 ## Acknowledgements
 
