@@ -241,7 +241,7 @@ class BrowserHandoffBroker:
             commands = [
                 ["Xvfb", f":{display}", "-screen", "0", os.environ.get("GEMINI_BROWSER_SCREEN", "1440x900x24"), "-nolisten", "tcp"],
                 vnc_command,
-                [*wait_for_display, "handoff-fluxbox", f":{display}", "fluxbox", "-no-toolbar", "-rc", str(fluxbox_config)],
+                [*wait_for_display, "handoff-display-manager", f":{display}", "/bin/sh", "-c", "exec sleep 3600"],
                 [*wait_for_display, "handoff-browser", f":{display}", "uv", "run", "gemini-web-session", "--profile-dir", str(profile), "--headed", "--status-file", str(status_file)],
             ]
             processes: list[subprocess.Popen] = []
