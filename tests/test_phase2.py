@@ -12,6 +12,7 @@ from gemini_webapi.utils import parse_response_by_frame
 from gemini_webapi_mcp.server import mcp
 from gemini_webapi_mcp.server import (
     _decode_upload_bytes,
+    _account_name_for_login,
     _env_flag,
     _handle_error,
     _native_image_content,
@@ -58,7 +59,38 @@ def test_conversation_tools_are_registered():
         "gemini_get_chat_history",
         "gemini_delete_chat",
         "gemini_switch_model",
+        "gemini_account_diagnostics",
+        "gemini_deactivate_account",
     } <= names
+
+
+def test_reauthentication_reuses_selected_account(monkeypatch, tmp_path):
+    from gemini_webapi_mcp.registry import DynamicAccountRegistry, generate_key
+
+    path = tmp_path / "registry.json.enc"
+    key = generate_key()
+    monkeypatch.setenv("GEMINI_REGISTRY_PATH", str(path))
+    monkeypatch.setenv("GEMINI_REGISTRY_KEY", key)
+    registry = DynamicAccountRegistry(path, key)
+    registry.register(subject="client:test", account="existing")
+    registry.select("client:test", "existing")
+
+    assert _account_name_for_login("client:test", "random-code-account") == "existing"
+
+
+def test_new_identity_gets_stable_account_name(monkeypatch, tmp_path):
+    from gemini_webapi_mcp.registry import DynamicAccountRegistry, generate_key
+
+    path = tmp_path / "registry.json.enc"
+    key = generate_key()
+    monkeypatch.setenv("GEMINI_REGISTRY_PATH", str(path))
+    monkeypatch.setenv("GEMINI_REGISTRY_KEY", key)
+    DynamicAccountRegistry(path, key)
+
+    first = _account_name_for_login("client:new", "random-one")
+    second = _account_name_for_login("client:new", "random-two")
+    assert first == second
+    assert first.startswith("gemini-")
 
 
 def test_streamable_http_tools_list_exposes_hotfix_contract():
@@ -112,6 +144,9 @@ def test_streamable_http_tools_list_exposes_hotfix_contract():
                     "gemini_get_chat_history",
                     "gemini_delete_chat",
                     "gemini_switch_model",
+                    "gemini_server_info",
+                    "gemini_account_diagnostics",
+                    "gemini_deactivate_account",
                 } <= by_name.keys()
                 assert "outputSchema" not in by_name["gemini_generate_image"]
 
@@ -142,6 +177,13 @@ def test_zombie_stream_is_structured_without_model_substitution():
     result = _handle_error(APIError("Response stalled (zombie stream)."))
     assert result.startswith("Error: upstream_stall")
     assert "unsupported_model" not in result
+
+
+def test_stream_failures_are_classified_without_retry_claims():
+    from gemini_webapi import APIError
+
+    assert _handle_error(APIError("Stream interrupted or truncated.")).startswith("Error: stream_interrupted")
+    assert _handle_error(APIError("Connection reset by peer")).startswith("Error: upstream_connection_closed")
 
 
 def test_pro_entitlement_error_is_not_reported_as_success():
