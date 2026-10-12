@@ -322,6 +322,27 @@ class BrowserHandoffBroker:
             os.replace(temporary, session.status_file)
             return state
 
+    def confirm_manual(self, token: str) -> dict[str, object]:
+        """Accept the user's explicit confirmation that sign-in is complete."""
+        with self._lock:
+            session = self._sessions.get(token)
+            if session is None or session.expires_at <= time.time():
+                return {"state": "expired", "ready": False, "expires_at": 0}
+            state = self.status(token)
+            if state["state"] in {"expired", "error", "stopped"}:
+                return state
+            state["state"] = "ready"
+            state["ready"] = True
+            state["manual_confirmation"] = True
+            temporary = Path(session.status_file).with_suffix(".tmp")
+            temporary.write_text(json.dumps({
+                "state": "ready",
+                "manual_confirmation": True,
+            }, separators=(",", ":")) + "\n", encoding="utf-8")
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, session.status_file)
+            return state
+
     def browser_url(self, session: BrowserHandoff) -> str:
         if not self.public_url:
             return ""
