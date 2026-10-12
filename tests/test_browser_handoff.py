@@ -75,6 +75,27 @@ def test_handoff_ready_state_never_reads_cookie_values(tmp_path: Path):
     assert broker.is_ready(session.token) is False
 
 
+def test_handoff_status_uses_basic_chromium_cookie_reader(monkeypatch, tmp_path: Path):
+    monkeypatch.delenv("GEMINI_ACCOUNT_COOKIE_READER", raising=False)
+    from gemini_webapi_mcp import server
+
+    calls = []
+
+    def read_basic(path):
+        calls.append(path)
+        return [(".google.com", "__Secure-1PSID", "redacted")]
+
+    monkeypatch.setattr(server, "_read_basic_chromium_cookies", read_basic)
+    broker = BrowserHandoffBroker(tmp_path, runner=lambda *args, **kwargs: FakeProcess())
+    session = broker.create()
+
+    state = broker.verify(session.token)
+
+    assert state["ready"] is True
+    assert state["has_psid"] is True
+    assert calls
+
+
 def test_handoff_reports_browser_process_failure(tmp_path: Path):
     broker = BrowserHandoffBroker(tmp_path, runner=lambda *args, **kwargs: ExitedProcess())
     session = broker.create()
