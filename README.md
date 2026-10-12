@@ -124,6 +124,17 @@ never stores cookie values in logs or MCP results.
 
 ### Persistent browser session
 
+Generated images are returned as MCP image content when the saved PNG/JPEG is
+available, in addition to the compatibility metadata response. The server
+keeps the output under the configured account media directory and does not
+expose arbitrary filesystem paths. Model capability responses include whether
+an entry was observed from the client or is a low-confidence fallback.
+
+Chat requests use bounded timeouts. Configure `GEMINI_CHAT_TIMEOUT`,
+`GEMINI_CLIENT_TIMEOUT`, and `GEMINI_WATCHDOG_TIMEOUT` when a deployment needs
+different limits. A stalled upstream stream is reported as `upstream_stall`;
+the server never substitutes another model after a stall.
+
 Chat sessions are stored in the persistent state volume at
 `/var/lib/gemini-mcp/conversations.sqlite3` by default. The store uses SQLite
 WAL mode, account-scopes every lookup, and records local message history plus
