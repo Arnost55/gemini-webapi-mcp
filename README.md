@@ -462,6 +462,7 @@ The only calibrated invariant is the star shape in `src/gemini_webapi_mcp/assets
 
 | Tool | Description |
 |------|-------------|
+| `gemini_server_info` | Report safe build, protocol, capability, tool, and conversation-schema metadata |
 | `gemini_generate_image` | Generate new or edit existing images |
 | `gemini_upload_file` | Analyze files — video, images, PDF, documents |
 | `gemini_upload_file_bytes` | Analyze caller-supplied base64 file bytes when paths are not shared with the container |
@@ -507,6 +508,12 @@ the MCP container. `gemini_upload_file_bytes` strips directory components,
 enforces `GEMINI_MAX_UPLOAD_BYTES` and the same MIME allowlist, stores the
 decoded bytes in a private temporary directory for one request, and removes
 them afterward. It does not provide arbitrary host-file access.
+
+Use `gemini_server_info` after reconnecting an MCP client to confirm the
+running server's registered tool names and build metadata. It never returns
+cookies, OAuth tokens, browser identifiers, or file contents. MCP clients that
+cache `tools/list` must reconnect or explicitly refresh the server connection
+after upgrading the image.
 
 ## Acknowledgements
 
