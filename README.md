@@ -124,6 +124,14 @@ never stores cookie values in logs or MCP results.
 
 ### Persistent browser session
 
+Chat sessions are stored in the persistent state volume at
+`/var/lib/gemini-mcp/conversations.sqlite3` by default. The store uses SQLite
+WAL mode, account-scopes every lookup, and records local message history plus
+Gemini's `cid`/`rid`/`rcid` metadata. It never stores authentication cookies.
+Use `GEMINI_CONVERSATIONS_PATH` to override the location and
+`GEMINI_CONVERSATION_TTL_SECONDS` to configure retention. The conversation
+history tools distinguish local MCP history from history fetched from Google.
+
 Install the optional browser support and Chromium runtime:
 
 ```bash
