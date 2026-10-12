@@ -153,7 +153,16 @@ class DynamicAccountRegistry:
             current = self._data["accounts"].get(account)
             if current and current.get("owner_subject") != subject:
                 raise PermissionError("account is already registered to another subject")
-            record = {"owner_subject": subject, "profile": profile or account, "scopes": sorted(scopes), "requests_per_minute": requests_per_minute, "state": state, "updated_at": int(time.time())}
+            now = int(time.time())
+            record = {
+                "owner_subject": subject,
+                "profile": profile or (current or {}).get("profile") or account,
+                "scopes": sorted(scopes),
+                "requests_per_minute": requests_per_minute,
+                "state": state,
+                "created_at": int((current or {}).get("created_at", now)),
+                "updated_at": now,
+            }
             self._data["accounts"][account] = record
             self._save()
             return dict(record, account=account)
@@ -169,6 +178,18 @@ class DynamicAccountRegistry:
             self._data["accounts"][account]["state"] = state
             self._data["accounts"][account]["updated_at"] = int(time.time())
             self._save()
+
+    def selection(self, subject: str) -> str | None:
+        """Return the persisted account name without selecting or mutating it."""
+        with self._locked():
+            self._reload_if_present()
+            selected = self._data.setdefault("selected", {}).get(subject)
+            if not isinstance(selected, str):
+                return None
+            record = self._data["accounts"].get(selected)
+            if not record or record.get("owner_subject") != subject or record.get("state") != "ready":
+                return None
+            return selected
 
     def select(self, subject: str, account: str | None = None) -> dict[str, Any]:
         with self._locked():
@@ -196,7 +217,15 @@ class DynamicAccountRegistry:
             result = []
             for name, record in self._data["accounts"].items():
                 if subject is None or record.get("owner_subject") == subject:
-                    result.append({"account": name, "profile": record.get("profile"), "scopes": record.get("scopes", []), "state": record.get("state"), "requests_per_minute": record.get("requests_per_minute")})
+                    result.append({
+                        "account": name,
+                        "profile": record.get("profile"),
+                        "scopes": record.get("scopes", []),
+                        "state": record.get("state"),
+                        "requests_per_minute": record.get("requests_per_minute"),
+                        "created_at": record.get("created_at"),
+                        "updated_at": record.get("updated_at"),
+                    })
             return result
 
 
