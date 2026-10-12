@@ -8,6 +8,9 @@ request answered 1096 / "Are you signed in?").
 import os
 import sys
 from http.cookiejar import Cookie, CookieJar
+import hashlib
+import sqlite3
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 import pytest
 
@@ -32,3 +35,21 @@ def test_resolve_cookies_prefers_exact_google_com_domain(monkeypatch):
     monkeypatch.delenv("GEMINI_PSID", raising=False)
 
     assert S._resolve_cookies() == ("good-psid", "good-ts")
+
+
+def test_basic_chromium_cookie_reader_handles_v10(tmp_path):
+    from gemini_webapi_mcp.server import _read_basic_chromium_cookies
+
+    db = tmp_path / "Cookies"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE cookies (host_key TEXT, name TEXT, encrypted_value BLOB, value TEXT)")
+    key = hashlib.pbkdf2_hmac("sha1", b"peanuts", b"saltysalt", 1, dklen=16)
+    iv = b" " * 16
+    value = b"psid-test"
+    pad = 16 - len(value) % 16
+    encrypted = Cipher(algorithms.AES(key), modes.CBC(iv)).encryptor()
+    blob = encrypted.update(value + bytes([pad]) * pad) + encrypted.finalize()
+    con.execute("INSERT INTO cookies VALUES (?, ?, ?, ?)", (".google.com", "__Secure-1PSID", b"v10" + blob, ""))
+    con.commit(); con.close()
+
+    assert _read_basic_chromium_cookies(db) == [(".google.com", "__Secure-1PSID", "psid-test")]
