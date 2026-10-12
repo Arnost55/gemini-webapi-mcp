@@ -59,6 +59,7 @@ DEFAULT_MODEL = "gemini-3.0-flash"
 # inside Nano Banana 2 before yielding the result (~210s wall-time observed).
 # Override with GEMINI_GEN_TIMEOUT.
 GEN_TIMEOUT = float(os.environ.get("GEMINI_GEN_TIMEOUT", "600"))
+CHAT_TIMEOUT = float(os.environ.get("GEMINI_CHAT_TIMEOUT", "300"))
 # Per-network-op timeout for image download in image.save() (seconds). Without
 # this the CDN fetch of the full-size (=s0, ~4.5MB) image can hang forever.
 DOWNLOAD_TIMEOUT = float(os.environ.get("GEMINI_DOWNLOAD_TIMEOUT", "60"))
@@ -557,7 +558,12 @@ class _AccountClientManager:
         from gemini_webapi import GeminiClient
         psid, psidts = self._cookies(profile)
         client = GeminiClient(secure_1psid=psid, secure_1psidts=psidts or None)
-        await client.init(timeout=300, watchdog_timeout=45, auto_close=False, auto_refresh=True)
+        await client.init(
+            timeout=float(os.environ.get("GEMINI_CLIENT_TIMEOUT", "300")),
+            watchdog_timeout=float(os.environ.get("GEMINI_WATCHDOG_TIMEOUT", "90")),
+            auto_close=False,
+            auto_refresh=True,
+        )
         _patch_client(client)
         self._cookie_pairs[key] = (psid, psidts)
         self._profiles[key] = profile
@@ -1301,9 +1307,21 @@ def _handle_error(e: Exception) -> str:
             "Re-login to gemini.google.com in Chrome, then call gemini_reset."
         )
     if isinstance(e, RequestTimeoutError):
-        return "Error: Request timed out. Try again or use a lighter model."
+        return "Error: request_timeout — Gemini did not respond before the configured timeout."
     if isinstance(e, APIError):
-        return f"Error: Gemini API error — {e}"
+        detail = str(e)
+        lowered = detail.lower()
+        if "response stalled" in lowered or "zombie stream" in lowered:
+            return "Error: upstream_stall — Gemini's stream stopped producing progress; the request was not retried by the MCP wrapper."
+        if "model" in lowered and ("unknown" in lowered or "invalid" in lowered):
+            return f"Error: unsupported_model — {detail}"
+        if "rate" in lowered or "too many requests" in lowered:
+            return f"Error: rate_limited — {detail}"
+        if "parse" in lowered or "response body" in lowered:
+            return f"Error: parser_failure — {detail}"
+        return f"Error: upstream_api_error — {detail}"
+    if isinstance(e, (asyncio.TimeoutError, TimeoutError)):
+        return "Error: request_timeout — Gemini did not respond before the configured timeout."
     return f"Error: {type(e).__name__} — {e}"
 
 
@@ -1475,12 +1493,13 @@ async def gemini_chat(
             except TimeoutError:
                 return "Error: session_expired — start a new conversation with gemini_start_chat."
             chat = _conversation_session(ctx, row, client)
-            response = await chat.send_message(prompt)
+            response = await asyncio.wait_for(chat.send_message(prompt), timeout=CHAT_TIMEOUT)
             manager.conversations.add_messages(subject, account, session_id, [("user", prompt), ("assistant", response.text or "")])
             manager.conversations.update_metadata(subject, account, session_id, [chat.cid, chat.rid, chat.rcid])
         else:
-            response = await client.generate_content(
-                prompt, model=model or DEFAULT_MODEL
+            response = await asyncio.wait_for(
+                client.generate_content(prompt, model=model or DEFAULT_MODEL),
+                timeout=CHAT_TIMEOUT,
             )
 
         text = response.text or "(empty response)"
@@ -1728,6 +1747,13 @@ async def gemini_generate_image(
             "images": saved,
             "conversation_id": conv_id,
         }
+        try:
+            from mcp.server.fastmcp.utilities.types import Image
+            image_blocks = [Image(path=item["path"]) for item in saved if Path(item["path"]).is_file()]
+            if image_blocks:
+                return [json.dumps(result, ensure_ascii=False, indent=2), *image_blocks]
+        except Exception:
+            logger.warning("MCP image content conversion failed", exc_info=True)
         return json.dumps(result, ensure_ascii=False, indent=2)
 
     except Exception as e:
