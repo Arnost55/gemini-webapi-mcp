@@ -441,6 +441,7 @@ class _AccountClientManager:
             import browser_cookie3
             cookies = browser_cookie3.chrome(
                 cookie_file=str(profile / "Default" / "Cookies"),
+                key_file=str(profile / "Local State"),
             )
         except Exception as exc:
             raise RuntimeError("cannot read cookies for the selected Gemini account") from exc
