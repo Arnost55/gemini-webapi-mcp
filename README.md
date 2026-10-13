@@ -67,11 +67,15 @@ Web login happens separately in a short-lived, isolated Chromium desktop.
 The server does not expose or return browser cookies.
 
 The MCP exposes `gemini_list_accounts`, `gemini_select_account`, and the
-read-only `gemini_account_diagnostics` tool for the connected-account workflow.
+read-only `gemini_account_diagnostics` / `gemini_get_account_info` tools for
+the connected-account workflow.
 `gemini_deactivate_account` requires the exact account ID as an explicit
 confirmation and disables only that registry record; it does not delete its
 Chromium profile, cookies, or conversations. Reauthentication reuses the
-persisted selection instead of creating a new random account record. ChatGPT
+persistent selection instead of creating a new random account record.
+`gemini_delete_account` is deliberately two-step: it accepts only an already
+disabled record and an exact `DELETE:<account_id>` confirmation, and still
+retains its profile and local conversations for recovery. ChatGPT
 owns the visual account screen; the MCP provides the metadata, authorization
 flow, identities, and account state that screen consumes. Set
 `GEMINI_PUBLIC_URL` to the HTTPS origin before using remote OAuth.
@@ -134,10 +138,17 @@ keeps the output under the configured account media directory and does not
 expose arbitrary filesystem paths. Model capability responses include whether
 an entry was observed from the client or is a low-confidence fallback.
 
-Chat requests use bounded timeouts. Configure `GEMINI_CHAT_TIMEOUT`,
+Chat and upload requests use bounded timeouts. Configure `GEMINI_CHAT_TIMEOUT`,
 `GEMINI_CLIENT_TIMEOUT`, and `GEMINI_WATCHDOG_TIMEOUT` when a deployment needs
 different limits. A stalled upstream stream is reported as `upstream_stall`;
 the server never substitutes another model after a stall.
+
+The service serializes requests per account by default because the upstream
+web client has mutable session state. This prevents an image-generation request
+from changing headers or parsing state for an overlapping Flash or file-upload
+request. Set `GEMINI_MAX_CONCURRENT_PER_ACCOUNT` above `1` only after testing
+the installed upstream client. Automatic upstream retries default to `0` to
+avoid replaying non-idempotent chat, upload, or image requests.
 
 Chat sessions are stored in the persistent state volume at
 `/var/lib/gemini-mcp/conversations.sqlite3` by default. The store uses SQLite
@@ -437,6 +448,8 @@ If cookie auto-detection fails, set them manually:
 | `GEMINI_ACCOUNT_INDEX` | Legacy Chrome account index for local cookie mode | `0` |
 | `GEMINI_UPSTREAM_AUTO_REFRESH` | Enable the upstream network cookie-rotation task; disabled by default to avoid Google 429s across multiple clients | `0` |
 | `GEMINI_UPSTREAM_REFRESH_INTERVAL` | Minimum interval for upstream cookie rotation when enabled (seconds) | `1800` |
+| `GEMINI_UPSTREAM_RETRIES` | Explicit upstream retry budget; retries can replay a request | `0` |
+| `GEMINI_MAX_CONCURRENT_PER_ACCOUNT` | Concurrent upstream calls per account; serialize by default for client safety | `1` |
 
 ## High Resolution (2x)
 
@@ -470,7 +483,13 @@ The only calibrated invariant is the star shape in `src/gemini_webapi_mcp/assets
 |------|-------------|
 | `gemini_server_info` | Report safe build, protocol, capability, tool, and conversation-schema metadata |
 | `gemini_account_diagnostics` | Report sanitized account/profile health and reference counts |
+| `gemini_get_account_info` | Compatibility alias for sanitized account diagnostics |
 | `gemini_deactivate_account` | Explicitly disable one account without deleting persistent data |
+| `gemini_delete_account` | Delete an already disabled registry record after exact confirmation; retain its profile and conversations |
+| `gemini_list_chats` | List local, account-scoped persistent conversations |
+| `gemini_get_chat` / `gemini_get_chat_history` | Retrieve local conversation metadata or locally persisted history |
+| `gemini_delete_chat` | Delete one local conversation after explicit confirmation; never deletes a Google conversation |
+| `gemini_switch_model` | Switch a persisted conversation model when supported |
 | `gemini_generate_image` | Generate new or edit existing images |
 | `gemini_upload_file` | Analyze files — video, images, PDF, documents |
 | `gemini_upload_file_bytes` | Analyze caller-supplied base64 file bytes when paths are not shared with the container |

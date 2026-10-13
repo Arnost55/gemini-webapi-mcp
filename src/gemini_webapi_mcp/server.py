@@ -9,6 +9,7 @@ browser cookies (__Secure-1PSID and __Secure-1PSIDTS).
 import asyncio
 import base64
 from collections import deque
+from contextvars import ContextVar
 import hashlib
 import json
 import logging
@@ -66,7 +67,10 @@ CHAT_TIMEOUT = float(os.environ.get("GEMINI_CHAT_TIMEOUT", "300"))
 # Per-network-op timeout for image download in image.save() (seconds). Without
 # this the CDN fetch of the full-size (=s0, ~4.5MB) image can hang forever.
 DOWNLOAD_TIMEOUT = float(os.environ.get("GEMINI_DOWNLOAD_TIMEOUT", "60"))
-UPSTREAM_RETRY_BUDGET = max(0, min(int(os.environ.get("GEMINI_UPSTREAM_RETRIES", "1")), 5))
+# Generation and upload requests are not safely replayable: an upstream request
+# can complete after a transport failure and a retry may create a second turn or
+# second upload.  Operators may explicitly opt in after assessing that risk.
+UPSTREAM_RETRY_BUDGET = max(0, min(int(os.environ.get("GEMINI_UPSTREAM_RETRIES", "0")), 5))
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -682,7 +686,10 @@ class _AccountClientManager:
         """Bound concurrent upstream requests per selected account."""
         subject, record = self._account(ctx)
         key = (subject, str(record["account"]))
-        limit = max(1, min(int(os.environ.get("GEMINI_MAX_CONCURRENT_PER_ACCOUNT", "2")), 8))
+        # GeminiClient owns mutable request/session state.  Queue concurrent
+        # MCP calls per account by default; deployments may raise the limit
+        # only after validating their upstream client version supports it.
+        limit = max(1, min(int(os.environ.get("GEMINI_MAX_CONCURRENT_PER_ACCOUNT", "1")), 8))
         async with self._lock:
             slot = self._request_slots.get(key)
             if slot is None:
@@ -860,13 +867,17 @@ def _consume_browser_handoff(token: str, subject: str, account: str) -> None:
     if not registry_path or not registry_key:
         raise RuntimeError("encrypted account registry is not configured")
     profile_root = Path(os.environ.get("GEMINI_PROFILE_ROOT", "/var/lib/gemini-mcp/accounts")).expanduser().resolve()
+    # Resolve an existing/stable account *before* selecting the profile
+    # destination.  Doing this afterwards can promote a completed login into
+    # an unregistered random handoff directory while the registry continues
+    # to point at the selected account's old profile.
+    account = _account_name_for_login(subject, account)
     destination = profile_root / account
     try:
         destination.relative_to(profile_root)
     except ValueError as exc:
         raise PermissionError("invalid Gemini account profile name") from exc
     registry = DynamicAccountRegistry(registry_path, registry_key)
-    account = _account_name_for_login(subject, account)
     registry.register(
         subject=subject,
         account=account,
@@ -1131,6 +1142,12 @@ async def gemini_account_diagnostics(ctx: Context, account_id: Optional[str] = N
             profile_exists = profile.is_dir()
         except ValueError:
             profile_exists = False
+        profile_last_modified = None
+        if profile_exists:
+            try:
+                profile_last_modified = profile.stat().st_mtime
+            except OSError:
+                pass
         credentials_available = False
         identity_fingerprint = None
         credential_error = None
@@ -1147,7 +1164,10 @@ async def gemini_account_diagnostics(ctx: Context, account_id: Optional[str] = N
             "account": account,
             "record_source": "encrypted_registry",
             "created_at": record.get("created_at"),
+            "created_at_source": "registry" if record.get("created_at") else "unavailable",
             "updated_at": record.get("updated_at"),
+            "profile_last_modified": profile_last_modified,
+            "last_local_conversation_activity": manager.conversations.last_activity_for_account(subject, account),
             "profile_exists": profile_exists,
             "credentials_available": credentials_available,
             "authentication_verified": "not_tested",
@@ -1167,6 +1187,12 @@ async def gemini_account_diagnostics(ctx: Context, account_id: Optional[str] = N
             item["google_identity_fingerprint"] and fingerprints.count(item["google_identity_fingerprint"]) > 1
         )
     return {"accounts": result, "selected_account": selected}
+
+
+@mcp.tool(name="gemini_get_account_info", annotations={"title": "Get Gemini Account Information", "readOnlyHint": True})
+async def gemini_get_account_info(ctx: Context, account_id: Optional[str] = None) -> dict:
+    """Compatibility alias for the sanitized account diagnostics tool."""
+    return await gemini_account_diagnostics(ctx, account_id)
 
 
 @mcp.tool(
@@ -1205,6 +1231,42 @@ async def gemini_deactivate_account(
         "conversations_deleted": False,
         "referenced_conversations": conversations,
         "active_session_references": active_sessions,
+    }
+
+
+@mcp.tool(name="gemini_delete_account", annotations={"title": "Delete Gemini Account Registry Record", "readOnlyHint": False})
+async def gemini_delete_account(account_id: str, confirm_delete: str, ctx: Context) -> dict:
+    """Delete only a disabled registry record after an exact confirmation.
+
+    Chromium profiles and local conversations remain intact for manual recovery.
+    """
+    expected = f"DELETE:{account_id}"
+    if not account_id or confirm_delete != expected:
+        return {
+            "error": "confirmation_required",
+            "message": "Pass confirm_delete exactly as DELETE:<account_id>. Profiles and conversations are retained.",
+        }
+    from .registry import DynamicAccountRegistry
+
+    path = os.environ.get("GEMINI_REGISTRY_PATH")
+    key = _configured_registry_key()
+    if not path or not key:
+        return {"error": "account_registry_not_configured"}
+    subject = _oauth_subject(ctx)
+    registry = DynamicAccountRegistry(path, key)
+    records = [item for item in registry.list_safe(subject) if item["account"] == account_id]
+    if not records:
+        return {"error": "account_not_found"}
+    if records[0].get("state") != "disabled":
+        return {"error": "account_must_be_deactivated_first"}
+    manager = ctx.request_context.lifespan_context["account_clients"]
+    conversations = manager.conversations.count_for_account(subject, account_id)
+    registry.delete(subject, account_id)
+    return {
+        "deleted_registry_record": account_id,
+        "profile_deleted": False,
+        "conversations_deleted": False,
+        "retained_conversation_references": conversations,
     }
 
 
@@ -1360,12 +1422,14 @@ def _decode_upload_bytes(filename: str, data_base64: str) -> tuple[str, bytes]:
     return name, data
 
 
-_image_mode = False
 _image_lock = asyncio.Lock()
 
-# Populated by _patched_parse hook during StreamGenerate response parsing.
-_image_tokens: dict[str, str] = {}   # preview_url -> download_token
-_last_metadata: list = []             # [cid, rid, rcid, ...] from last response
+# These values must be request-local.  The upstream parser is process-global;
+# a module-global image flag caused unrelated Flash/upload requests that
+# overlapped image generation to receive the image request rewrite.
+_image_mode: ContextVar[bool] = ContextVar("gemini_image_mode", default=False)
+_image_tokens: ContextVar[dict[str, str] | None] = ContextVar("gemini_image_tokens", default=None)
+_image_metadata: ContextVar[list | None] = ContextVar("gemini_image_metadata", default=None)
 
 
 def _patch_client(gemini_client):
@@ -1409,8 +1473,7 @@ def _patch_client(gemini_client):
     _orig_request = http.request
 
     async def patched_request(method, url, **kwargs):
-        global _image_mode
-        if method == "POST" and "StreamGenerate" in str(url) and _image_mode:
+        if method == "POST" and "StreamGenerate" in str(url) and _image_mode.get():
             headers = kwargs.get("headers") or {}
 
             # Per-request UUID — the browser uses an UPPERCASE uuid, embedded in
@@ -1519,8 +1582,9 @@ def _patch_client(gemini_client):
                 title = url_arr[2] or "[Generated Image]"
                 token = url_arr[4] if len(url_arr) > 4 else None
                 if url and isinstance(url, str) and url.startswith("http"):
-                    if token:
-                        _image_tokens[url] = token
+                    tokens = _image_tokens.get()
+                    if token and tokens is not None:
+                        tokens[url] = token
                     # Force a download timeout so image.save()'s CDN fetch of the
                     # full-size (=s0) image can never hang the call forever.
                     sk = dict(session_kwargs or {})
@@ -1545,6 +1609,14 @@ def _patch_client(gemini_client):
     # --- Wrap parse_response_by_frame to capture image download tokens ---
     def _patched_parse(buffer):
         parts, remaining = _orig_parse(buffer)
+        # Do not inspect or mutate image state for ordinary text/upload calls.
+        # This parser is shared by every GeminiClient in this process.
+        if not _image_mode.get():
+            return parts, remaining
+        tokens = _image_tokens.get()
+        metadata = _image_metadata.get()
+        if tokens is None or metadata is None:
+            return parts, remaining
         for part in parts:
             inner_json_str = get_nested_value(part, [2])
             if not inner_json_str:
@@ -1554,28 +1626,28 @@ def _patch_client(gemini_client):
                 # Capture conversation metadata (cid/rid)
                 m_data = get_nested_value(part_json, [1])
                 if isinstance(m_data, list) and len(m_data) >= 2 and m_data[0]:
-                    if len(_last_metadata) >= 3:
-                        _last_metadata[0] = m_data[0]
-                        _last_metadata[1] = m_data[1]
+                    if len(metadata) >= 3:
+                        metadata[0] = m_data[0]
+                        metadata[1] = m_data[1]
                     else:
-                        _last_metadata.clear()
-                        _last_metadata.extend(m_data)
+                        metadata.clear()
+                        metadata.extend(m_data)
                 # Capture image download tokens + rcid from candidates
                 candidates = get_nested_value(part_json, [4], [])
                 for cand in candidates:
                     rcid = get_nested_value(cand, [0])
                     if rcid and isinstance(rcid, str) and rcid.startswith("rc_"):
-                        if len(_last_metadata) >= 2:
-                            if len(_last_metadata) == 2:
-                                _last_metadata.append(rcid)
+                        if len(metadata) >= 2:
+                            if len(metadata) == 2:
+                                metadata.append(rcid)
                             else:
-                                _last_metadata[2] = rcid
+                                metadata[2] = rcid
                     # Old format: [12][7][0]
                     for gid in get_nested_value(cand, [12, 7, 0], []):
                         url = get_nested_value(gid, [0, 3, 3])
                         token = get_nested_value(gid, [0, 3, 5])
                         if url and token:
-                            _image_tokens[url] = token
+                            tokens[url] = token
                     # New dict format: [12][0]["8"]
                     val12 = get_nested_value(cand, [12])
                     if isinstance(val12, list) and val12 and isinstance(val12[0], dict):
@@ -1584,7 +1656,7 @@ def _patch_client(gemini_client):
                             if isinstance(url_arr, list) and len(url_arr) >= 5:
                                 url, token = url_arr[3], url_arr[4]
                                 if url and token:
-                                    _image_tokens[url] = token
+                                    tokens[url] = token
             except Exception:
                 pass
         return parts, remaining
@@ -1593,12 +1665,52 @@ def _patch_client(gemini_client):
     logger.info("Patched GeminiClient with browser-compatible parameters")
 
 
-def _handle_error(e: Exception) -> str:
+class _ResponseParseError(RuntimeError):
+    """The upstream response completed but did not contain a usable result."""
+
+
+class _UpstreamRejectedError(RuntimeError):
+    """Gemini returned a structured candidate that is an error, not an answer."""
+
+
+_GENERIC_UPSTREAM_FAILURES = (
+    "sorry, something went wrong",
+    "i encountered an error doing what you asked",
+    "i'm having a hard time fulfilling your request",
+    "i’m having a hard time fulfilling your request",
+    "can i help you with something else instead",
+)
+
+
+def _response_text(response, *, operation: str) -> str:
+    """Return a real model answer, never a known upstream failure placeholder.
+
+    The web endpoint can emit an error as an otherwise-valid text candidate.
+    First validate the response envelope; the narrow text check is a final
+    safety net for that undocumented behaviour, not the primary classifier.
+    """
+    candidates = getattr(response, "candidates", None)
+    if not isinstance(candidates, list) or not candidates:
+        raise _ResponseParseError(f"Gemini returned no candidates for {operation}")
+    text = getattr(response, "text", None)
+    if not isinstance(text, str) or not text.strip():
+        raise _ResponseParseError(f"Gemini returned no text for {operation}")
+    normalized = " ".join(text.split()).lower()
+    if any(marker in normalized for marker in _GENERIC_UPSTREAM_FAILURES):
+        raise _UpstreamRejectedError(f"Gemini rejected the {operation} request")
+    return text
+
+
+def _handle_error(e: Exception, *, operation: str | None = None) -> str:
     from gemini_webapi import AuthError, APIError, RequestTimeoutError
 
+    if isinstance(e, _ResponseParseError):
+        return f"Error: response_parse_error — {e}"
+    if isinstance(e, _UpstreamRejectedError):
+        return f"Error: upstream_rejected — {e}"
     if isinstance(e, AuthError):
         return (
-            "Error: Authentication failed. Cookies may have expired. "
+            "Error: authentication_error — Cookies may have expired. "
             "Re-login to gemini.google.com in Chrome, then call gemini_reset."
         )
     if isinstance(e, RequestTimeoutError):
@@ -1606,24 +1718,35 @@ def _handle_error(e: Exception) -> str:
     if isinstance(e, APIError):
         detail = str(e)
         lowered = detail.lower()
+        status = re.search(r"(?:status|http)\s*[:=]?\s*(\d{3})", lowered)
+        if status and status.group(1) == "429":
+            return f"Error: rate_limited — {detail}"
+        if status and status.group(1) in {"401", "403"}:
+            return f"Error: authentication_error — {detail}"
+        if status and status.group(1) == "404":
+            return f"Error: model_unavailable — {detail}"
         if "response stalled" in lowered or "zombie stream" in lowered:
             return "Error: upstream_stall — Gemini's stream stopped producing progress; no model substitution was attempted."
         if "truncated" in lowered or "stream interrupted" in lowered:
-            return f"Error: stream_interrupted — Gemini closed or truncated the response before a complete frame arrived: {detail}"
+            return f"Error: response_parse_error — Gemini closed or truncated the response before a complete frame arrived: {detail}"
         if "connection" in lowered and ("closed" in lowered or "reset" in lowered):
-            return f"Error: upstream_connection_closed — Gemini closed the response connection: {detail}"
+            return f"Error: upstream_rejected — Gemini closed the response connection: {detail}"
         if ("not available" in lowered or "not enabled" in lowered or "upgrade" in lowered) and "pro" in lowered:
-            return f"Error: model_entitlement — Gemini Pro is not available to this account: {detail}"
+            return f"Error: model_unavailable — Gemini Pro is not available to this account: {detail}"
         if "model" in lowered and ("unknown" in lowered or "invalid" in lowered):
-            return f"Error: unsupported_model — {detail}"
+            return f"Error: model_unavailable — {detail}"
         if "rate" in lowered or "too many requests" in lowered:
             return f"Error: rate_limited — {detail}"
         if "parse" in lowered or "response body" in lowered:
-            return f"Error: parser_failure — {detail}"
-        return f"Error: upstream_api_error — {detail}"
+            return f"Error: response_parse_error — {detail}"
+        if operation == "upload":
+            return f"Error: upload_failed — {detail}"
+        return f"Error: unknown_upstream_error — {detail}"
     if isinstance(e, (asyncio.TimeoutError, TimeoutError)):
         return "Error: request_timeout — Gemini did not respond before the configured timeout."
-    return f"Error: {type(e).__name__} — {e}"
+    if operation == "upload":
+        return f"Error: upload_failed — {type(e).__name__}"
+    return f"Error: unknown_upstream_error — {type(e).__name__}"
 
 
 async def _fetch_download_url(client, token: str, prompt: str, metadata: list, image_index: int = 0) -> str | None:
@@ -1803,7 +1926,8 @@ async def gemini_chat(
             except asyncio.TimeoutError:
                 await manager.invalidate(ctx, client)
                 raise
-            manager.conversations.add_messages(subject, account, session_id, [("user", prompt), ("assistant", response.text or "")])
+            text = _response_text(response, operation="chat")
+            manager.conversations.add_messages(subject, account, session_id, [("user", prompt), ("assistant", text)])
             manager.conversations.update_metadata(subject, account, session_id, [chat.cid, chat.rid, chat.rcid])
         else:
             try:
@@ -1820,7 +1944,7 @@ async def gemini_chat(
                 await manager.invalidate(ctx, client)
                 raise
 
-        text = response.text or "(empty response)"
+        text = _response_text(response, operation="chat")
         thoughts = response.thoughts
         if thoughts:
             return f"**Thinking:**\n{thoughts}\n\n**Response:**\n{text}"
@@ -1938,7 +2062,6 @@ async def gemini_generate_image(
     Returns:
         JSON with generated image paths, conversation_id for continuation, or an error message.
     """
-    global _image_mode
     import time
     t0 = time.monotonic()
     try:
@@ -1956,7 +2079,9 @@ async def gemini_generate_image(
         chat = None
         async with _image_lock:
             t = _stage("acquired image lock", t0)
-            _image_mode = True
+            mode_token = _image_mode.set(True)
+            tokens_token = _image_tokens.set({})
+            metadata_token = _image_metadata.set([])
             try:
                 if conversation_id:
                     chat = client.start_chat(
@@ -1983,17 +2108,24 @@ async def gemini_generate_image(
                     "via the library (the browser is usually faster). Try again."
                 )
             finally:
-                _image_mode = False
+                _image_mode.reset(mode_token)
             _stage("generate_content returned", t)
 
         if not response.images:
-            return response.text or "No images were generated. Try rephrasing your prompt."
+            # A text-only image response is not a successful image generation.
+            # Preserve a real explanatory model response, but reject known
+            # upstream failure placeholders.
+            return _response_text(response, operation="image generation")
 
         # --- Try to get 2x download URLs via c8o8Fe RPC ---
-        # Always prefer _last_metadata from monkey-patched response parsing
-        # (captures raw stream data needed for c8o8Fe). Fall back to chat metadata.
-        if _last_metadata and _last_metadata[0]:
-            metadata = list(_last_metadata)
+        # Prefer request-local stream metadata (needed for c8o8Fe), then fall
+        # back to the chat object when the upstream parser did not expose it.
+        captured_metadata = _image_metadata.get() or []
+        image_tokens = _image_tokens.get()
+        if image_tokens is None:
+            image_tokens = {}
+        if captured_metadata and captured_metadata[0]:
+            metadata = list(captured_metadata)
         elif chat:
             metadata = [chat.cid or "", chat.rid or "", chat.rcid or ""]
         else:
@@ -2001,14 +2133,14 @@ async def gemini_generate_image(
         download_urls: dict[int, str] = {}
         if not _SKIP_2X:
             for i, image in enumerate(response.images):
-                token = _image_tokens.pop(image.url, None)
+                token = image_tokens.pop(image.url, None)
                 if token and metadata:
                     logger.info("Requesting 2x download URL for image %d...", i)
                     dl_url = await _fetch_download_url(client, token, prompt, metadata, i)
                     if dl_url:
                         download_urls[i] = dl_url
                         logger.info("Got 2x download URL for image %d", i)
-        _image_tokens.clear()  # clean up any leftover tokens
+        image_tokens.clear()  # clean up any leftover tokens
         t = _stage("c8o8Fe (2x url) done", t)
 
         media_dir = _get_media_dir(ctx)
@@ -2083,6 +2215,12 @@ async def gemini_generate_image(
 
     except Exception as e:
         return _handle_error(e)
+    finally:
+        # Reset request-local parser state even when an image download fails.
+        if "tokens_token" in locals():
+            _image_tokens.reset(tokens_token)
+        if "metadata_token" in locals():
+            _image_metadata.reset(metadata_token)
 
 
 @mcp.tool(
@@ -2123,14 +2261,17 @@ async def gemini_upload_file(
         client = await _get_client(ctx)
         manager = ctx.request_context.lifespan_context["account_clients"]
         async with manager.request_slot(ctx):
-            response = await client.generate_content(
-                prompt, model=model or DEFAULT_MODEL, files=[str(p)],
-                current_retry=UPSTREAM_RETRY_BUDGET,
+            response = await asyncio.wait_for(
+                client.generate_content(
+                    prompt, model=model or DEFAULT_MODEL, files=[str(p)],
+                    current_retry=UPSTREAM_RETRY_BUDGET,
+                ),
+                timeout=CHAT_TIMEOUT,
             )
-        return response.text or "(empty response)"
+        return _response_text(response, operation="file upload")
 
     except Exception as e:
-        return _handle_error(e)
+        return _handle_error(e, operation="upload")
 
 
 @mcp.tool(
@@ -2167,15 +2308,18 @@ async def gemini_upload_file_bytes(
         temp_path = temp_dir / safe_name
         temp_path.write_bytes(data)
         async with account_clients.request_slot(ctx):
-            response = await client.generate_content(
-                prompt, model=model or DEFAULT_MODEL, files=[str(temp_path)],
-                current_retry=UPSTREAM_RETRY_BUDGET,
+            response = await asyncio.wait_for(
+                client.generate_content(
+                    prompt, model=model or DEFAULT_MODEL, files=[str(temp_path)],
+                    current_retry=UPSTREAM_RETRY_BUDGET,
+                ),
+                timeout=CHAT_TIMEOUT,
             )
-        return response.text or "(empty response)"
+        return _response_text(response, operation="file upload")
     except ValueError as exc:
         return f"Error: {exc}"
     except Exception as e:
-        return _handle_error(e)
+        return _handle_error(e, operation="upload")
     finally:
         if temp_dir is not None:
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -2216,11 +2360,14 @@ async def gemini_analyze_url(
         full_prompt = f"{prompt}\n\n{url}"
         manager = ctx.request_context.lifespan_context["account_clients"]
         async with manager.request_slot(ctx):
-            response = await client.generate_content(
-                full_prompt, model=model or DEFAULT_MODEL,
-                current_retry=UPSTREAM_RETRY_BUDGET,
+            response = await asyncio.wait_for(
+                client.generate_content(
+                    full_prompt, model=model or DEFAULT_MODEL,
+                    current_retry=UPSTREAM_RETRY_BUDGET,
+                ),
+                timeout=CHAT_TIMEOUT,
             )
-        return response.text or "(empty response)"
+        return _response_text(response, operation="URL analysis")
     except Exception as e:
         return _handle_error(e)
 
