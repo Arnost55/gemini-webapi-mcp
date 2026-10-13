@@ -179,6 +179,26 @@ class DynamicAccountRegistry:
             self._data["accounts"][account]["updated_at"] = int(time.time())
             self._save()
 
+    def delete(self, subject: str, account: str) -> dict[str, Any]:
+        """Delete one owned registry record only.
+
+        This deliberately does not touch the Chromium profile, encrypted key,
+        or local conversation database.  The MCP server requires an explicit
+        confirmation before it calls this method.
+        """
+        self._validate(account)
+        with self._locked():
+            self._reload_if_present()
+            record = self._data["accounts"].get(account)
+            if not record or record.get("owner_subject") != subject:
+                raise KeyError(account)
+            del self._data["accounts"][account]
+            selected = self._data.setdefault("selected", {})
+            if selected.get(subject) == account:
+                del selected[subject]
+            self._save()
+            return dict(record, account=account)
+
     def selection(self, subject: str) -> str | None:
         """Return the persisted account name without selecting or mutating it."""
         with self._locked():
