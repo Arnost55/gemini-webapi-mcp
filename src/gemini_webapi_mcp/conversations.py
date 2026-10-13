@@ -140,6 +140,16 @@ class ConversationStore:
                 (subject, account),
             ).fetchone()[0])
 
+    def last_activity_for_account(self, subject: str, account: str) -> float | None:
+        """Return the newest retained local-conversation timestamp, if any."""
+        with self._lock, self._connect() as db:
+            self.cleanup(db)
+            value = db.execute(
+                "SELECT MAX(updated_at) FROM conversations WHERE subject=? AND account=?",
+                (subject, account),
+            ).fetchone()[0]
+            return float(value) if value is not None else None
+
     def history(self, subject: str, account: str, session_id: str, limit: int = 100) -> list[dict]:
         with self._lock, self._connect() as db:
             self._row(db, subject, account, session_id)
