@@ -13,9 +13,12 @@ from gemini_webapi_mcp.server import mcp
 from gemini_webapi_mcp.server import (
     _decode_upload_bytes,
     _account_name_for_login,
+    _consume_browser_handoff,
     _env_flag,
     _handle_error,
+    _image_mode,
     _native_image_content,
+    _response_text,
     gemini_server_info,
     _validate_upload_path,
 )
@@ -60,7 +63,9 @@ def test_conversation_tools_are_registered():
         "gemini_delete_chat",
         "gemini_switch_model",
         "gemini_account_diagnostics",
+        "gemini_get_account_info",
         "gemini_deactivate_account",
+        "gemini_delete_account",
     } <= names
 
 
@@ -76,6 +81,35 @@ def test_reauthentication_reuses_selected_account(monkeypatch, tmp_path):
     registry.select("client:test", "existing")
 
     assert _account_name_for_login("client:test", "random-code-account") == "existing"
+
+
+def test_handoff_promotes_into_selected_account_profile(monkeypatch, tmp_path):
+    """A completed login must not be promoted into a random handoff name."""
+    from gemini_webapi_mcp.registry import DynamicAccountRegistry, generate_key
+    import gemini_webapi_mcp.server as server
+
+    path = tmp_path / "registry.json.enc"
+    profiles = tmp_path / "accounts"
+    key = generate_key()
+    monkeypatch.setenv("GEMINI_REGISTRY_PATH", str(path))
+    monkeypatch.setenv("GEMINI_REGISTRY_KEY", key)
+    monkeypatch.setenv("GEMINI_PROFILE_ROOT", str(profiles))
+    registry = DynamicAccountRegistry(path, key)
+    registry.register(subject="client:test", account="selected")
+    registry.select("client:test", "selected")
+
+    class Broker:
+        destination = None
+
+        def consume(self, token, promote_to):
+            self.destination = promote_to
+
+    broker = Broker()
+    monkeypatch.setattr(server, "_handoff_broker", broker)
+
+    _consume_browser_handoff("opaque-token", "client:test", "random-handoff-name")
+
+    assert broker.destination == profiles.resolve() / "selected"
 
 
 def test_new_identity_gets_stable_account_name(monkeypatch, tmp_path):
@@ -146,7 +180,9 @@ def test_streamable_http_tools_list_exposes_hotfix_contract():
                     "gemini_switch_model",
                     "gemini_server_info",
                     "gemini_account_diagnostics",
+                    "gemini_get_account_info",
                     "gemini_deactivate_account",
+                    "gemini_delete_account",
                 } <= by_name.keys()
                 assert "outputSchema" not in by_name["gemini_generate_image"]
 
@@ -182,15 +218,59 @@ def test_zombie_stream_is_structured_without_model_substitution():
 def test_stream_failures_are_classified_without_retry_claims():
     from gemini_webapi import APIError
 
-    assert _handle_error(APIError("Stream interrupted or truncated.")).startswith("Error: stream_interrupted")
-    assert _handle_error(APIError("Connection reset by peer")).startswith("Error: upstream_connection_closed")
+    assert _handle_error(APIError("Stream interrupted or truncated.")).startswith("Error: response_parse_error")
+    assert _handle_error(APIError("Connection reset by peer")).startswith("Error: upstream_rejected")
 
 
 def test_pro_entitlement_error_is_not_reported_as_success():
     from gemini_webapi import APIError
 
     result = _handle_error(APIError("gemini-3.0-pro is not available for this account"))
-    assert result.startswith("Error: model_entitlement")
+    assert result.startswith("Error: model_unavailable")
+
+
+def test_generic_upstream_candidate_is_not_returned_as_success():
+    class Response:
+        candidates = [object()]
+        text = "Sorry, something went wrong. Please try your request again."
+
+    with pytest.raises(RuntimeError, match="rejected"):
+        _response_text(Response(), operation="chat")
+
+
+def test_missing_candidate_is_response_parse_error():
+    class Response:
+        candidates = []
+        text = "A response that must not be accepted without a candidate"
+
+    with pytest.raises(RuntimeError, match="no candidates"):
+        _response_text(Response(), operation="upload")
+
+
+def test_image_mode_is_task_local_not_process_global():
+    async def verify():
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def image_task():
+            token = _image_mode.set(True)
+            try:
+                started.set()
+                await release.wait()
+                return _image_mode.get()
+            finally:
+                _image_mode.reset(token)
+
+        async def flash_task():
+            await started.wait()
+            observed = _image_mode.get()
+            release.set()
+            return observed
+
+        image, flash = await asyncio.gather(image_task(), flash_task())
+        return image, flash
+
+    assert asyncio.run(verify()) == (True, False)
 
 
 def test_image_mime_is_derived_from_actual_bytes(tmp_path):
@@ -269,7 +349,7 @@ def test_upstream_frame_parser_retains_incomplete_frame_without_growth():
     assert len(remainder) <= len(frame)
 
 
-def test_account_request_slots_bound_concurrency(monkeypatch, tmp_path):
+def test_account_request_slots_serialize_mutable_upstream_client_by_default(monkeypatch, tmp_path):
     from gemini_webapi_mcp.server import _AccountClientManager
 
     monkeypatch.setenv("GEMINI_CONVERSATIONS_PATH", str(tmp_path / "conversations.sqlite3"))
@@ -293,4 +373,4 @@ def test_account_request_slots_bound_concurrency(monkeypatch, tmp_path):
         await asyncio.gather(*(task() for _ in range(8)))
         return peak
 
-    assert asyncio.run(run()) == 2
+    assert asyncio.run(run()) == 1
