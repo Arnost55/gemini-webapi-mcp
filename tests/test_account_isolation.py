@@ -19,6 +19,7 @@ def test_two_mcp_clients_keep_profiles_media_and_sessions_isolated(tmp_path, mon
     monkeypatch.setenv("GEMINI_REGISTRY_KEY", key)
     monkeypatch.setenv("GEMINI_PROFILE_ROOT", str(profile_root))
     monkeypatch.setenv("GEMINI_MEDIA_ROOT", str(media_root))
+    monkeypatch.setenv("GEMINI_CONVERSATIONS_PATH", str(tmp_path / "conversations.sqlite3"))
     monkeypatch.setattr(server, "_oauth_subject", lambda ctx: ctx.subject)
 
     manager = server._AccountClientManager()

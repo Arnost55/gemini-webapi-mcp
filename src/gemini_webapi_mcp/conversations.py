@@ -64,15 +64,27 @@ class ConversationStore:
             """)
             if version < 1:
                 db.execute("PRAGMA user_version=1")
+                version = 1
+            # Version 2 retains the public thinking selection alongside the
+            # stable public model ID. Existing conversations keep NULL, which
+            # means no verified thinking control was selected.
+            if version < 2:
+                columns = {row[1] for row in db.execute("PRAGMA table_info(conversations)")}
+                if "thinking_level" not in columns:
+                    db.execute("ALTER TABLE conversations ADD COLUMN thinking_level TEXT")
+                db.execute("PRAGMA user_version=2")
 
-    def create(self, subject: str, account: str, model: str) -> str:
+    def create(self, subject: str, account: str, model: str, thinking_level: str | None = None) -> str:
         now = time.time()
         session_id = secrets.token_urlsafe(24)
         with self._lock, self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             db.execute(
-                "INSERT INTO conversations VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, NULL)",
-                (session_id, subject, account, model, now, now, now + self.ttl_seconds),
+                """INSERT INTO conversations
+                   (session_id, subject, account, model, cid, rid, rcid, created_at,
+                    updated_at, expires_at, closed_at, thinking_level)
+                   VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, NULL, ?)""",
+                (session_id, subject, account, model, now, now, now + self.ttl_seconds, thinking_level),
             )
             db.commit()
         return session_id
@@ -104,11 +116,12 @@ class ConversationStore:
             )
             db.commit()
 
-    def update_model(self, subject: str, account: str, session_id: str, model: str) -> None:
+    def update_model(self, subject: str, account: str, session_id: str, model: str,
+                     thinking_level: str | None = None) -> None:
         with self._lock, self._connect() as db:
             self._row(db, subject, account, session_id)
-            db.execute("UPDATE conversations SET model=?, updated_at=?, expires_at=? WHERE session_id=?",
-                       (model, time.time(), time.time() + self.ttl_seconds, session_id))
+            db.execute("UPDATE conversations SET model=?, thinking_level=?, updated_at=?, expires_at=? WHERE session_id=?",
+                       (model, thinking_level, time.time(), time.time() + self.ttl_seconds, session_id))
 
     def add_messages(self, subject: str, account: str, session_id: str, messages: list[tuple[str, str]]) -> None:
         with self._lock, self._connect() as db:

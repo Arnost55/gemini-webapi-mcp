@@ -138,6 +138,35 @@ keeps the output under the configured account media directory and does not
 expose arbitrary filesystem paths. Model capability responses include whether
 an entry was observed from the client or is a low-confidence fallback.
 
+### Model discovery and thinking controls
+
+`gemini_list_models` returns an account-scoped, short-lived catalog with a
+source, confidence, availability state, and only the thinking levels that have
+a verified request route. The pinned `gemini-webapi` client currently exposes
+legacy 3.0 routes only and has no public discovery or thinking-level parameter.
+Accordingly, a Gemini UI label such as `Gemini 3.6 Flash` is never guessed or
+silently remapped by this server. It is listed only when the client exposes it,
+and remains non-routable until an operator supplies evidence-backed routing in
+`GEMINI_MODEL_CATALOG_JSON`.
+
+The catalog accepts explicit `upstream_model`, `request_headers`, and optional
+per-level `thinking_request_headers` entries. These settings are for captured,
+reviewed protocol evidence only; do not copy a UI name into them or infer
+undocumented request fields. Route headers are applied with request-local
+context, so a concurrent request cannot inherit a selected thinking level.
+
+`thinking_level` is an optional argument to chat, persistent chat creation,
+file analysis, URL analysis, and image generation. It accepts `low`, `medium`, or `high`, but is
+rejected as `thinking_not_supported` unless the selected catalog entry declares
+that level and a verified route. This preserves legacy model IDs and prevents a
+request from being secretly downgraded or given an invented UI-to-protocol map.
+The catalog cache is isolated per selected account and is invalidated whenever
+the account client is replaced or reset.
+
+The currently captured image-generation route deliberately rejects
+`thinking_level`: it has no verified independent thinking control, rather than
+silently ignoring the supplied value.
+
 Chat and upload requests use bounded timeouts. Configure `GEMINI_CHAT_TIMEOUT`,
 `GEMINI_CLIENT_TIMEOUT`, and `GEMINI_WATCHDOG_TIMEOUT` when a deployment needs
 different limits. A stalled upstream stream is reported as `upstream_stall`;
@@ -489,7 +518,7 @@ The only calibrated invariant is the star shape in `src/gemini_webapi_mcp/assets
 | `gemini_list_chats` | List local, account-scoped persistent conversations |
 | `gemini_get_chat` / `gemini_get_chat_history` | Retrieve local conversation metadata or locally persisted history |
 | `gemini_delete_chat` | Delete one local conversation after explicit confirmation; never deletes a Google conversation |
-| `gemini_switch_model` | Switch a persisted conversation model when supported |
+| `gemini_switch_model` | Switch a persisted conversation model and verified thinking selection |
 | `gemini_generate_image` | Generate new or edit existing images |
 | `gemini_upload_file` | Analyze files — video, images, PDF, documents |
 | `gemini_upload_file_bytes` | Analyze caller-supplied base64 file bytes when paths are not shared with the container |
@@ -505,6 +534,11 @@ The only calibrated invariant is the star shape in `src/gemini_webapi_mcp/assets
 | `gemini-3.0-flash` | chat, file analysis | Fast |
 | `gemini-3.0-flash-thinking` | image generation | Nano Banana 2, supports aspect ratios |
 | `gemini-3.0-pro` | — | Alternative model |
+
+These legacy entries are fallback routes, not an availability promise. Use
+`gemini_list_models` before selecting a model. The server does not currently
+claim a thinking level for them because the installed upstream library has no
+verified control for it.
 
 ## Usage Examples
 

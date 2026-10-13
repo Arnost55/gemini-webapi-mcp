@@ -18,6 +18,19 @@ def test_conversation_survives_new_store_and_restores_metadata(tmp_path):
     assert [m["content"] for m in second.history("subject-a", "account-a", session_id)] == ["remember this", "I will"]
 
 
+def test_thinking_level_migrates_and_survives_restart(tmp_path):
+    path = tmp_path / "conversations.sqlite3"
+    first = ConversationStore(path)
+    session_id = first.create("subject-a", "account-a", "gemini-3.0-flash", "medium")
+    with first._connect() as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+    second = ConversationStore(path)
+    assert second.get("subject-a", "account-a", session_id)["thinking_level"] == "medium"
+    second.update_model("subject-a", "account-a", session_id, "gemini-3.0-pro", None)
+    row = second.get("subject-a", "account-a", session_id)
+    assert (row["model"], row["thinking_level"]) == ("gemini-3.0-pro", None)
+
+
 def test_conversations_are_account_scoped(tmp_path):
     store = ConversationStore(tmp_path / "conversations.sqlite3")
     session_id = store.create("subject-a", "account-a", "model")

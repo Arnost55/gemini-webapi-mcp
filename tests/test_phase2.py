@@ -127,9 +127,10 @@ def test_new_identity_gets_stable_account_name(monkeypatch, tmp_path):
     assert first.startswith("gemini-")
 
 
-def test_streamable_http_tools_list_exposes_hotfix_contract():
+def test_streamable_http_tools_list_exposes_hotfix_contract(monkeypatch, tmp_path):
     """Exercise the actual Streamable HTTP initialize/tools/list exchange."""
     import httpx
+    monkeypatch.setenv("GEMINI_CONVERSATIONS_PATH", str(tmp_path / "conversations.sqlite3"))
 
     async def exchange():
         app = mcp.streamable_http_app()
@@ -185,6 +186,8 @@ def test_streamable_http_tools_list_exposes_hotfix_contract():
                     "gemini_delete_account",
                 } <= by_name.keys()
                 assert "outputSchema" not in by_name["gemini_generate_image"]
+                for name in ("gemini_start_chat", "gemini_chat", "gemini_generate_image", "gemini_upload_file", "gemini_analyze_url"):
+                    assert "thinking_level" in by_name[name]["inputSchema"]["properties"]
 
     asyncio.run(exchange())
 
