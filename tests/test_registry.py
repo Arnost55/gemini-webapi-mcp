@@ -59,6 +59,19 @@ def test_registry_selection_survives_reload(tmp_path):
     assert restarted.selected("user")["account"] == "two"
 
 
+def test_registry_reregistration_preserves_creation_time_and_selection(tmp_path):
+    path = tmp_path / "registry.json.enc"
+    key = generate_key()
+    registry = DynamicAccountRegistry(path, key)
+    first = registry.register(subject="user", account="one", profile="profile-one")
+    registry.select("user", "one")
+    second = registry.register(subject="user", account="one", profile="new-profile", state="ready")
+
+    assert second["created_at"] == first["created_at"]
+    assert second["profile"] == "new-profile"
+    assert registry.selection("user") == "one"
+
+
 def test_registry_concurrent_workers_preserve_all_accounts(tmp_path):
     path = tmp_path / "registry.json.enc"
     key = generate_key()
