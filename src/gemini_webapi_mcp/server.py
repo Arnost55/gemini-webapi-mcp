@@ -35,6 +35,7 @@ from .models import (
     ModelSelectionError,
     capabilities_json,
     current_request_headers,
+    discovery_metadata,
     model_request_context,
     resolve_model,
 )
@@ -1357,6 +1358,7 @@ async def gemini_list_models(ctx: Context) -> dict:
                 "account_scoped": True,
                 "cached": True,
                 "thinking_controls": "only listed when a verified route is configured",
+                **discovery_metadata(client),
             },
         }
     except Exception as exc:
@@ -1721,6 +1723,26 @@ _GENERIC_UPSTREAM_FAILURES = (
 )
 
 
+def _upstream_failure_closes_client(error: Exception) -> bool:
+    """Whether a failed upstream call must not leave its client cached.
+
+    The pinned client closes itself before raising these stream failures.
+    Keeping that instance cached makes the next request hit a closed HTTP
+    session, so evict it and let the next request rebuild from the existing
+    account profile.
+    """
+    from gemini_webapi import APIError, RequestTimeoutError
+
+    if isinstance(error, RequestTimeoutError):
+        return True
+    if not isinstance(error, APIError):
+        return False
+    detail = str(error).lower()
+    return any(marker in detail for marker in (
+        "response stalled", "zombie stream", "stream interrupted", "truncated",
+    ))
+
+
 def _response_text(response, *, operation: str) -> str:
     """Return a real model answer, never a known upstream failure placeholder.
 
@@ -2002,6 +2024,8 @@ async def gemini_chat(
             return f"**Thinking:**\n{thoughts}\n\n**Response:**\n{text}"
         return text
     except Exception as e:
+        if "manager" in locals() and "client" in locals() and _upstream_failure_closes_client(e):
+            await manager.invalidate(ctx, client)
         return _handle_error(e)
 
 
@@ -2340,6 +2364,8 @@ async def gemini_upload_file(
         return _response_text(response, operation="file upload")
 
     except Exception as e:
+        if "manager" in locals() and "client" in locals() and _upstream_failure_closes_client(e):
+            await manager.invalidate(ctx, client)
         return _handle_error(e, operation="upload")
 
 
@@ -2391,6 +2417,8 @@ async def gemini_upload_file_bytes(
     except ValueError as exc:
         return f"Error: {exc}"
     except Exception as e:
+        if "account_clients" in locals() and "client" in locals() and _upstream_failure_closes_client(e):
+            await account_clients.invalidate(ctx, client)
         return _handle_error(e, operation="upload")
     finally:
         if temp_dir is not None:
@@ -2444,6 +2472,8 @@ async def gemini_analyze_url(
                 )
         return _response_text(response, operation="URL analysis")
     except Exception as e:
+        if "manager" in locals() and "client" in locals() and _upstream_failure_closes_client(e):
+            await manager.invalidate(ctx, client)
         return _handle_error(e)
 
 
@@ -2474,7 +2504,13 @@ async def gemini_reset(ctx: Context) -> str:
         subject, record = _AccountClientManager._account(ctx)
         psid, psidts = _AccountClientManager._cookies(_AccountClientManager._profile(record))
         new_client = GeminiClient(secure_1psid=psid, secure_1psidts=psidts or None)
-        await new_client.init(timeout=300, watchdog_timeout=45, auto_close=False, auto_refresh=True)
+        await new_client.init(
+            timeout=float(os.environ.get("GEMINI_CLIENT_TIMEOUT", "300")),
+            watchdog_timeout=float(os.environ.get("GEMINI_WATCHDOG_TIMEOUT", "90")),
+            auto_close=False,
+            auto_refresh=UPSTREAM_AUTO_REFRESH,
+            refresh_interval=UPSTREAM_REFRESH_INTERVAL,
+        )
         _patch_client(new_client)
 
         manager = ctx.request_context.lifespan_context["account_clients"]
