@@ -72,6 +72,19 @@ def test_registry_reregistration_preserves_creation_time_and_selection(tmp_path)
     assert registry.selection("user") == "one"
 
 
+def test_registry_delete_only_removes_owned_record_and_selection(tmp_path):
+    registry = DynamicAccountRegistry(tmp_path / "registry.json.enc", generate_key())
+    registry.register(subject="user", account="one")
+    registry.select("user", "one")
+
+    deleted = registry.delete("user", "one")
+
+    assert deleted["account"] == "one"
+    assert registry.selection("user") is None
+    with pytest.raises(KeyError):
+        registry.delete("other-user", "one")
+
+
 def test_registry_concurrent_workers_preserve_all_accounts(tmp_path):
     path = tmp_path / "registry.json.enc"
     key = generate_key()
