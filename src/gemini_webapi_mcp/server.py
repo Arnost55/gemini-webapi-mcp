@@ -30,7 +30,14 @@ from importlib.metadata import PackageNotFoundError, version as package_version
 from urllib.parse import parse_qsl, urlencode, quote, urlsplit, urlunsplit
 
 from mcp.server.fastmcp import FastMCP, Context
-from .models import capabilities_json
+from .models import (
+    ModelCatalogCache,
+    ModelSelectionError,
+    capabilities_json,
+    current_request_headers,
+    model_request_context,
+    resolve_model,
+)
 from .oauth import LocalOAuth
 from .browser_handoff import BrowserHandoffBroker
 from .viewer import DEFAULT_RFB_URL, content_security_policy, viewer_page
@@ -491,6 +498,7 @@ class _AccountClientManager:
         self._refresh_task: asyncio.Task | None = None
         self._maintenance_task: asyncio.Task | None = None
         self._request_slots: dict[tuple[str, str], asyncio.Semaphore] = {}
+        self.model_catalog = ModelCatalogCache()
         from .conversations import ConversationStore
         self.conversations = ConversationStore()
 
@@ -613,6 +621,7 @@ class _AccountClientManager:
                     new_client = await self._build_client(key, profile)
                     await old_client.close()
                     self.clients[key] = new_client
+                    self.model_catalog.invalidate(key)
                 except Exception:
                     logger.warning("Gemini cookie refresh failed for account %s", key[1], exc_info=True)
 
@@ -731,6 +740,7 @@ class _AccountClientManager:
         self.clients.clear()
         self.sessions.clear()
         self._request_slots.clear()
+        self.model_catalog.invalidate()
 
     async def invalidate(self, ctx: Context, client) -> None:
         """Close and evict a timed-out client so its HTTP connection is not reused."""
@@ -741,6 +751,7 @@ class _AccountClientManager:
             if current is not client:
                 return
             self.clients.pop(key, None)
+            self.model_catalog.invalidate(key)
             try:
                 await asyncio.wait_for(client.close(), timeout=5)
             except Exception:
@@ -1294,7 +1305,8 @@ async def gemini_server_info() -> dict:
         "mcp_protocol_version": "2025-03-26",
         "enabled_capabilities": [
             "chat", "persistent_conversations", "image_generation", "image_editing",
-            "file_upload", "url_analysis", "model_discovery",
+            "file_upload", "url_analysis", "account_scoped_model_catalog",
+            "verified_thinking_controls",
         ],
         "registered_tools": tools,
         "conversation_schema_version": schema_version,
@@ -1311,6 +1323,7 @@ async def gemini_select_account(account_id: str, ctx: Context) -> dict:
         raise RuntimeError("account registry is not configured")
     subject = _oauth_subject(ctx)
     account = DynamicAccountRegistry(path, key).select(subject, account_id)
+    ctx.request_context.lifespan_context["account_clients"].model_catalog.invalidate()
     return {"selected": account["account"], "profile": account.get("profile"), "state": account.get("state")}
 
 
@@ -1334,8 +1347,18 @@ async def gemini_list_models(ctx: Context) -> dict:
     # identity, selection, profile, or session must fail closed rather than
     # being mistaken for a harmless discovery failure.
     client = await _get_client(ctx)
+    manager = ctx.request_context.lifespan_context["account_clients"]
+    key = manager.conversation_owner(ctx)
     try:
-        return {"models": capabilities_json(client)}
+        models, discovered_at = manager.model_catalog.get(key, client)
+        return {
+            "models": [item.public(discovered_at=discovered_at) for item in models],
+            "discovery": {
+                "account_scoped": True,
+                "cached": True,
+                "thinking_controls": "only listed when a verified route is configured",
+            },
+        }
     except Exception as exc:
         logger.warning("model discovery unavailable: %s", type(exc).__name__)
         return {"models": capabilities_json(None), "warning": "discovery_unavailable"}
@@ -1348,16 +1371,24 @@ async def _get_client(ctx: Context):
     return await ctx.request_context.lifespan_context["account_clients"].get(ctx)
 
 
+async def _select_model(ctx: Context, client, model: str | None, thinking_level: str | None = None):
+    """Resolve a public model through this account's short-lived catalog."""
+    manager = ctx.request_context.lifespan_context["account_clients"]
+    key = manager.conversation_owner(ctx)
+    capabilities, _ = manager.model_catalog.get(key, client)
+    return resolve_model(capabilities, model or DEFAULT_MODEL, thinking_level)
+
+
 def _get_sessions(ctx: Context) -> dict:
     return ctx.request_context.lifespan_context["account_clients"].sessions
 
 
-def _conversation_session(ctx: Context, row: dict, client):
+def _conversation_session(ctx: Context, row: dict, client, selection):
     """Reconstruct an upstream ChatSession from persisted Gemini metadata."""
     metadata = [row.get("cid"), row.get("rid"), row.get("rcid")]
     if not any(metadata):
-        return client.start_chat(model=row["model"])
-    return client.start_chat(metadata=metadata, model=row["model"])
+        return client.start_chat(model=selection.upstream_model)
+    return client.start_chat(metadata=metadata, model=selection.upstream_model)
 
 
 def _get_media_dir(ctx: Context) -> Path:
@@ -1473,6 +1504,14 @@ def _patch_client(gemini_client):
     _orig_request = http.request
 
     async def patched_request(method, url, **kwargs):
+        # Configured model routes may carry evidence-backed request headers.
+        # They are ContextVar-scoped so concurrent account requests cannot
+        # leak a selected model or thinking configuration into each other.
+        configured_headers = current_request_headers()
+        if configured_headers:
+            headers = dict(kwargs.get("headers") or {})
+            headers.update(configured_headers)
+            kwargs["headers"] = headers
         if method == "POST" and "StreamGenerate" in str(url) and _image_mode.get():
             headers = kwargs.get("headers") or {}
 
@@ -1704,6 +1743,8 @@ def _response_text(response, *, operation: str) -> str:
 def _handle_error(e: Exception, *, operation: str | None = None) -> str:
     from gemini_webapi import AuthError, APIError, RequestTimeoutError
 
+    if isinstance(e, ModelSelectionError):
+        return f"Error: {e.code} — {e}"
     if isinstance(e, _ResponseParseError):
         return f"Error: response_parse_error — {e}"
     if isinstance(e, _UpstreamRejectedError):
@@ -1847,6 +1888,7 @@ async def _fetch_download_url(client, token: str, prompt: str, metadata: list, i
 async def gemini_start_chat(
     ctx: Context,
     model: Optional[str] = None,
+    thinking_level: Optional[str] = None,
 ) -> str:
     """Start a new multi-turn chat session with Gemini.
 
@@ -1863,11 +1905,12 @@ async def gemini_start_chat(
         client = await _get_client(ctx)
         manager = ctx.request_context.lifespan_context["account_clients"]
         subject, account = manager.conversation_owner(ctx)
-        selected_model = model or DEFAULT_MODEL
-        session_id = manager.conversations.create(subject, account, selected_model)
+        selection = await _select_model(ctx, client, model, thinking_level)
+        session_id = manager.conversations.create(subject, account, selection.id, selection.thinking_level)
         return json.dumps({
             "session_id": session_id,
-            "model": selected_model,
+            "model": selection.id,
+            "thinking_level": selection.thinking_level,
             "persistent": True,
             "message": f"Chat session started. Use session_id '{session_id}' in gemini_chat.",
         })
@@ -1890,6 +1933,7 @@ async def gemini_chat(
     ctx: Context,
     model: Optional[str] = None,
     session_id: Optional[str] = None,
+    thinking_level: Optional[str] = None,
 ) -> str:
     """Send a text prompt to Google Gemini and get a response.
 
@@ -1916,13 +1960,19 @@ async def gemini_chat(
                 return "Error: session_not_found — start a new conversation with gemini_start_chat."
             except TimeoutError:
                 return "Error: session_expired — start a new conversation with gemini_start_chat."
-            chat = _conversation_session(ctx, row, client)
+            if model is not None and model != row["model"]:
+                return "Error: session_model_mismatch — use gemini_switch_model before changing a persistent conversation."
+            if thinking_level is not None and thinking_level != row.get("thinking_level"):
+                return "Error: session_thinking_level_mismatch — start a new conversation or switch the saved model selection."
+            selection = await _select_model(ctx, client, row["model"], row.get("thinking_level"))
+            chat = _conversation_session(ctx, row, client, selection)
             try:
                 async with manager.request_slot(ctx):
-                    response = await asyncio.wait_for(
-                        chat.send_message(prompt, current_retry=UPSTREAM_RETRY_BUDGET),
-                        timeout=CHAT_TIMEOUT,
-                    )
+                    with model_request_context(selection):
+                        response = await asyncio.wait_for(
+                            chat.send_message(prompt, current_retry=UPSTREAM_RETRY_BUDGET),
+                            timeout=CHAT_TIMEOUT,
+                        )
             except asyncio.TimeoutError:
                 await manager.invalidate(ctx, client)
                 raise
@@ -1930,16 +1980,18 @@ async def gemini_chat(
             manager.conversations.add_messages(subject, account, session_id, [("user", prompt), ("assistant", text)])
             manager.conversations.update_metadata(subject, account, session_id, [chat.cid, chat.rid, chat.rcid])
         else:
+            selection = await _select_model(ctx, client, model, thinking_level)
             try:
                 async with manager.request_slot(ctx):
-                    response = await asyncio.wait_for(
-                        client.generate_content(
-                            prompt,
-                            model=model or DEFAULT_MODEL,
-                            current_retry=UPSTREAM_RETRY_BUDGET,
-                        ),
-                        timeout=CHAT_TIMEOUT,
-                    )
+                    with model_request_context(selection):
+                        response = await asyncio.wait_for(
+                            client.generate_content(
+                                prompt,
+                                model=selection.upstream_model,
+                                current_retry=UPSTREAM_RETRY_BUDGET,
+                            ),
+                            timeout=CHAT_TIMEOUT,
+                        )
             except asyncio.TimeoutError:
                 await manager.invalidate(ctx, client)
                 raise
@@ -2001,7 +2053,8 @@ async def gemini_delete_chat(session_id: str, ctx: Context, confirm: bool = Fals
 
 
 @mcp.tool(name="gemini_switch_model", annotations={"title": "Switch Conversation Model", "readOnlyHint": False})
-async def gemini_switch_model(session_id: str, model: str, ctx: Context) -> dict:
+async def gemini_switch_model(session_id: str, model: str, ctx: Context,
+                              thinking_level: Optional[str] = None) -> dict:
     """Change the model used when reconstructing a persisted conversation."""
     if not model or len(model) > 128:
         return {"error": "unsupported_model", "message": "A non-empty model identifier is required."}
@@ -2009,8 +2062,12 @@ async def gemini_switch_model(session_id: str, model: str, ctx: Context) -> dict
     subject, account = manager.conversation_owner(ctx)
     try:
         row = manager.conversations.get(subject, account, session_id)
-        manager.conversations.update_model(subject, account, session_id, model)
-        return {"session_id": session_id, "model": model, "upstream_conversation_preserved": bool(row.get("cid"))}
+        client = await _get_client(ctx)
+        selection = await _select_model(ctx, client, model, thinking_level)
+        manager.conversations.update_model(subject, account, session_id, selection.id, selection.thinking_level)
+        return {"session_id": session_id, "model": selection.id,
+                "thinking_level": selection.thinking_level,
+                "upstream_conversation_preserved": bool(row.get("cid"))}
     except KeyError:
         return {"error": "session_not_found"}
     except TimeoutError:
@@ -2035,6 +2092,7 @@ async def gemini_generate_image(
     prompt: str,
     ctx: Context,
     model: Optional[str] = None,
+    thinking_level: Optional[str] = None,
     files: Optional[list[str]] = None,
     conversation_id: Optional[list[str]] = None,
 ) -> str:
@@ -2065,6 +2123,14 @@ async def gemini_generate_image(
     import time
     t0 = time.monotonic()
     try:
+        if thinking_level is not None:
+            # Image generation uses a separately captured browser route. The
+            # installed client exposes no verified independent thinking knob
+            # for that route, so accepting it would be a misleading no-op.
+            raise ModelSelectionError(
+                "thinking_not_supported",
+                "image generation has no verified independent thinking-level request mapping",
+            )
         client = await _get_client(ctx)
 
         # Validate input files
@@ -2238,6 +2304,7 @@ async def gemini_upload_file(
     ctx: Context,
     prompt: str = "Describe this file.",
     model: Optional[str] = None,
+    thinking_level: Optional[str] = None,
 ) -> str:
     """Upload a file (image, PDF, document, video) to Gemini and ask a question about it.
 
@@ -2260,14 +2327,16 @@ async def gemini_upload_file(
 
         client = await _get_client(ctx)
         manager = ctx.request_context.lifespan_context["account_clients"]
+        selection = await _select_model(ctx, client, model, thinking_level)
         async with manager.request_slot(ctx):
-            response = await asyncio.wait_for(
-                client.generate_content(
-                    prompt, model=model or DEFAULT_MODEL, files=[str(p)],
-                    current_retry=UPSTREAM_RETRY_BUDGET,
-                ),
-                timeout=CHAT_TIMEOUT,
-            )
+            with model_request_context(selection):
+                response = await asyncio.wait_for(
+                    client.generate_content(
+                        prompt, model=selection.upstream_model, files=[str(p)],
+                        current_retry=UPSTREAM_RETRY_BUDGET,
+                    ),
+                    timeout=CHAT_TIMEOUT,
+                )
         return _response_text(response, operation="file upload")
 
     except Exception as e:
@@ -2290,6 +2359,7 @@ async def gemini_upload_file_bytes(
     ctx: Context,
     prompt: str = "Describe this file.",
     model: Optional[str] = None,
+    thinking_level: Optional[str] = None,
 ) -> str:
     """Upload file bytes supplied by the MCP caller.
 
@@ -2302,19 +2372,21 @@ async def gemini_upload_file_bytes(
     try:
         safe_name, data = _decode_upload_bytes(filename, data_base64)
         client = await _get_client(ctx)
+        selection = await _select_model(ctx, client, model, thinking_level)
         account_clients = ctx.request_context.lifespan_context["account_clients"]
         account = re.sub(r"[^A-Za-z0-9_.-]", "_", account_clients.conversation_owner(ctx)[1])
         temp_dir = Path(shutil.mkdtemp(prefix=f"gemini-upload-{account}-"))
         temp_path = temp_dir / safe_name
         temp_path.write_bytes(data)
         async with account_clients.request_slot(ctx):
-            response = await asyncio.wait_for(
-                client.generate_content(
-                    prompt, model=model or DEFAULT_MODEL, files=[str(temp_path)],
-                    current_retry=UPSTREAM_RETRY_BUDGET,
-                ),
-                timeout=CHAT_TIMEOUT,
-            )
+            with model_request_context(selection):
+                response = await asyncio.wait_for(
+                    client.generate_content(
+                        prompt, model=selection.upstream_model, files=[str(temp_path)],
+                        current_retry=UPSTREAM_RETRY_BUDGET,
+                    ),
+                    timeout=CHAT_TIMEOUT,
+                )
         return _response_text(response, operation="file upload")
     except ValueError as exc:
         return f"Error: {exc}"
@@ -2340,6 +2412,7 @@ async def gemini_analyze_url(
     ctx: Context,
     prompt: str = "Summarize this content.",
     model: Optional[str] = None,
+    thinking_level: Optional[str] = None,
 ) -> str:
     """Analyze a URL — YouTube videos, webpages, articles, etc.
 
@@ -2359,14 +2432,16 @@ async def gemini_analyze_url(
         client = await _get_client(ctx)
         full_prompt = f"{prompt}\n\n{url}"
         manager = ctx.request_context.lifespan_context["account_clients"]
+        selection = await _select_model(ctx, client, model, thinking_level)
         async with manager.request_slot(ctx):
-            response = await asyncio.wait_for(
-                client.generate_content(
-                    full_prompt, model=model or DEFAULT_MODEL,
-                    current_retry=UPSTREAM_RETRY_BUDGET,
-                ),
-                timeout=CHAT_TIMEOUT,
-            )
+            with model_request_context(selection):
+                response = await asyncio.wait_for(
+                    client.generate_content(
+                        full_prompt, model=selection.upstream_model,
+                        current_retry=UPSTREAM_RETRY_BUDGET,
+                    ),
+                    timeout=CHAT_TIMEOUT,
+                )
         return _response_text(response, operation="URL analysis")
     except Exception as e:
         return _handle_error(e)
@@ -2405,6 +2480,7 @@ async def gemini_reset(ctx: Context) -> str:
         manager = ctx.request_context.lifespan_context["account_clients"]
         key = (subject, str(record["account"]))
         manager.clients[key] = new_client
+        manager.model_catalog.invalidate(key)
         return "Gemini client re-initialised with fresh cookies."
 
     except Exception as e:
