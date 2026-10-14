@@ -1300,6 +1300,8 @@ async def gemini_server_info() -> dict:
                 schema_version = int(db.execute("PRAGMA user_version").fetchone()[0])
     except (OSError, sqlite3.Error):
         schema_version = -1
+    from .upstream import inspect_upstream
+
     return {
         "application_version": _app_version(),
         "build_commit": os.environ.get("GEMINI_BUILD_COMMIT") or os.environ.get("GITHUB_SHA") or "unknown",
@@ -1311,6 +1313,7 @@ async def gemini_server_info() -> dict:
         ],
         "registered_tools": tools,
         "conversation_schema_version": schema_version,
+        "upstream": inspect_upstream().public(),
     }
 
 

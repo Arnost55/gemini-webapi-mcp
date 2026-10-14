@@ -25,7 +25,9 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "gemini-webapi @ git+https://github.com/xob0t/Gemini-API.git",
+    # Audited 2026-10-14. Never follow upstream master implicitly: its web
+    # protocol implementation changes without a release boundary.
+    "gemini-webapi @ git+https://github.com/xob0t/Gemini-API.git@4402e5231760a1e85e28eb6cd0040ff302b764de",
     "mcp>=1.8,<2",
     "browser-cookie3>=0.20",
     "orjson>=3.9",
