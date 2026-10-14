@@ -1,4 +1,5 @@
 import json
+import asyncio
 
 import pytest
 
@@ -7,8 +8,10 @@ from gemini_webapi_mcp.models import (
     ModelCatalogCache,
     ModelSelectionError,
     capabilities_json,
+    current_request_fields,
     discovery_metadata,
     discover_models,
+    model_request_context,
     resolve_model,
 )
 
@@ -64,6 +67,55 @@ def test_configured_model_can_declare_an_evidence_backed_route(monkeypatch):
     assert dict(selection.request_headers) == {
         "x-test-route": "captured", "x-test-thinking": "high-captured",
     }
+
+
+def test_versioned_capture_can_configure_request_local_selector_fields(monkeypatch):
+    monkeypatch.setenv("GEMINI_MODEL_CATALOG_JSON", json.dumps({"models": [{
+        "id": "modern", "upstream_model": {"model_name": "modern", "model_header": {}},
+        "thinking_levels": ["low", "high"],
+        "request_fields": {"79": 3},
+        "thinking_request_fields": {"low": {"17": [[1]], "80": 1}, "high": {"17": [[3]], "80": 3}},
+        "protocol_version": "gemini-web-streamgenerate-v1",
+        "evidence_sha256": "a" * 64,
+    }]}))
+    selection = resolve_model(discover_models(), "modern", "high")
+    assert dict(selection.request_fields) == {17: [[3]], 79: 3, 80: 3}
+
+
+def test_unfingerprinted_private_protocol_fields_are_ignored(monkeypatch):
+    monkeypatch.setenv("GEMINI_MODEL_CATALOG_JSON", json.dumps({"models": [{
+        "id": "unsafe", "upstream_model": "gemini-3.0-flash",
+        "thinking_levels": ["high"], "request_fields": {"79": 3},
+        "thinking_request_fields": {"high": {"80": 3}},
+    }]}))
+    selection = resolve_model(discover_models(), "unsafe", "high")
+    assert selection.request_fields == ()
+
+
+def test_protocol_selector_fields_are_task_local():
+    from gemini_webapi_mcp.models import ModelSelection
+
+    selection = ModelSelection("modern", "modern", "high", request_fields=((79, 3), (80, 3)))
+
+    async def verify():
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def selected():
+            with model_request_context(selection):
+                entered.set()
+                await release.wait()
+                return dict(current_request_fields())
+
+        async def unrelated():
+            await entered.wait()
+            observed = dict(current_request_fields())
+            release.set()
+            return observed
+
+        return await asyncio.gather(selected(), unrelated())
+
+    assert asyncio.run(verify()) == [{79: 3, 80: 3}, {}]
 
 
 def test_catalog_cache_is_account_scoped_and_invalidatable():

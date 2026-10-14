@@ -295,6 +295,9 @@ def test_server_info_is_non_sensitive_and_reports_registered_tools():
     info = asyncio.run(gemini_server_info())
     assert info["mcp_protocol_version"] == "2025-03-26"
     assert "gemini_server_info" in info["registered_tools"]
+    assert info["registered_tool_count"] == len(info["registered_tools"])
+    assert info["model_discovery"]["thinking_level_protocol_verified"] is False
+    assert "verified_thinking_controls" not in info["enabled_capabilities"]
     assert "__Secure-1PSID" not in repr(info)
     assert "cookies" not in repr(info).lower()
 

@@ -44,12 +44,18 @@ class ModelCapability:
     upstream_model: Any = None
     request_headers: tuple[tuple[str, str], ...] = ()
     thinking_request_headers: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = ()
+    request_fields: tuple[tuple[int, Any], ...] = ()
+    thinking_request_fields: tuple[tuple[str, tuple[tuple[int, Any], ...]], ...] = ()
+    protocol_version: str | None = None
+    evidence_sha256: str | None = None
 
     def public(self, *, discovered_at: float | None = None) -> dict[str, Any]:
         value = asdict(self)
         value.pop("upstream_model", None)
         value.pop("request_headers", None)
         value.pop("thinking_request_headers", None)
+        value.pop("request_fields", None)
+        value.pop("thinking_request_fields", None)
         value["thinking_levels"] = list(self.thinking_levels)
         if discovered_at is not None:
             value["discovered_at"] = discovered_at
@@ -73,11 +79,19 @@ _VALID_THINKING_LEVELS = frozenset({"low", "medium", "high"})
 _request_headers: ContextVar[Mapping[str, str] | None] = ContextVar(
     "gemini_model_request_headers", default=None
 )
+_request_fields: ContextVar[Mapping[int, Any] | None] = ContextVar(
+    "gemini_model_request_fields", default=None
+)
 
 
 def current_request_headers() -> Mapping[str, str]:
     """Request-local verified headers for the selected configured route."""
     return _request_headers.get() or {}
+
+
+def current_request_fields() -> Mapping[int, Any]:
+    """Request-local, allow-listed f.req fields from verified evidence."""
+    return _request_fields.get() or {}
 
 
 class model_request_context:
@@ -86,13 +100,16 @@ class model_request_context:
     def __init__(self, selection: "ModelSelection"):
         self.selection = selection
         self._token = None
+        self._fields_token = None
 
     def __enter__(self):
         self._token = _request_headers.set(dict(self.selection.request_headers))
+        self._fields_token = _request_fields.set(dict(self.selection.request_fields))
         return self
 
     def __exit__(self, *_exc):
         _request_headers.reset(self._token)
+        _request_fields.reset(self._fields_token)
 
 
 @dataclass(frozen=True)
@@ -101,6 +118,7 @@ class ModelSelection:
     upstream_model: Any
     thinking_level: str | None
     request_headers: tuple[tuple[str, str], ...] = ()
+    request_fields: tuple[tuple[int, Any], ...] = ()
 
 
 def _candidate(value: Any) -> str | None:
@@ -122,6 +140,24 @@ def _as_levels(value: Any) -> tuple[str, ...]:
     if not isinstance(value, (list, tuple)):
         return ()
     return tuple(level for level in value if isinstance(level, str) and level in _VALID_THINKING_LEVELS)
+
+
+_ALLOWED_PROTOCOL_FIELDS = frozenset({17, 31, 79, 80, 91, 96})
+
+
+def _as_fields(value: Any) -> tuple[tuple[int, Any], ...]:
+    """Accept only known model/thinking selector slots, never prompt/session slots."""
+    if not isinstance(value, Mapping):
+        return ()
+    fields: list[tuple[int, Any]] = []
+    for raw_index, field_value in value.items():
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError):
+            continue
+        if index in _ALLOWED_PROTOCOL_FIELDS and isinstance(field_value, (int, str, bool, list, type(None))):
+            fields.append((index, field_value))
+    return tuple(sorted(fields))
 
 
 def _from_mapping(raw: Mapping[str, Any], *, source: str, confidence: str) -> ModelCapability | None:
@@ -148,6 +184,23 @@ def _from_mapping(raw: Mapping[str, Any], *, source: str, confidence: str) -> Mo
                 continue
             if all(isinstance(key, str) and isinstance(header, str) for key, header in value.items()):
                 thinking_headers.append((level, tuple(sorted(value.items()))))
+    fields = _as_fields(raw.get("request_fields")) if source == "configured" else ()
+    raw_thinking_fields = raw.get("thinking_request_fields", {}) if source == "configured" else {}
+    thinking_fields: list[tuple[str, tuple[tuple[int, Any], ...]]] = []
+    if isinstance(raw_thinking_fields, Mapping):
+        for level, value in raw_thinking_fields.items():
+            mapped = _as_fields(value)
+            if level in levels and mapped:
+                thinking_fields.append((level, mapped))
+    protocol_version = raw.get("protocol_version") if isinstance(raw.get("protocol_version"), str) else None
+    evidence_sha256 = raw.get("evidence_sha256") if isinstance(raw.get("evidence_sha256"), str) else None
+    # Modern private-protocol fields are accepted only with a versioned,
+    # fingerprinted capture. Legacy header-only catalogs remain compatible.
+    if (fields or thinking_fields) and not (
+        protocol_version and evidence_sha256 and len(evidence_sha256) == 64
+    ):
+        fields = ()
+        thinking_fields = []
     return ModelCapability(
         id=model_id,
         label=label,
@@ -164,6 +217,10 @@ def _from_mapping(raw: Mapping[str, Any], *, source: str, confidence: str) -> Mo
         upstream_model=upstream,
         request_headers=tuple(sorted(headers.items())),
         thinking_request_headers=tuple(thinking_headers),
+        request_fields=fields,
+        thinking_request_fields=tuple(thinking_fields),
+        protocol_version=protocol_version,
+        evidence_sha256=evidence_sha256,
     )
 
 
@@ -293,13 +350,16 @@ def resolve_model(capabilities: Iterable[ModelCapability], model: str, thinking_
             )
     effective_level = thinking_level or capability.default_thinking_level
     headers = dict(capability.request_headers)
+    fields = dict(capability.request_fields)
     if effective_level:
         headers.update(dict(capability.thinking_request_headers).get(effective_level, ()))
+        fields.update(dict(capability.thinking_request_fields).get(effective_level, ()))
     return ModelSelection(
         id=capability.id,
         upstream_model=capability.upstream_model,
         thinking_level=effective_level,
         request_headers=tuple(sorted(headers.items())),
+        request_fields=tuple(sorted(fields.items())),
     )
 
 

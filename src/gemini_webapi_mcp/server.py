@@ -34,6 +34,7 @@ from .models import (
     ModelCatalogCache,
     ModelSelectionError,
     capabilities_json,
+    current_request_fields,
     current_request_headers,
     discovery_metadata,
     model_request_context,
@@ -1289,6 +1290,7 @@ async def gemini_delete_account(account_id: str, confirm_delete: str, ctx: Conte
 async def gemini_server_info() -> dict:
     """Return non-sensitive build, protocol, capability, and schema metadata."""
     tools = sorted(name for name in mcp._tool_manager._tools if name.startswith("gemini_"))
+    model_metadata = discovery_metadata()
     db_path = Path(os.environ.get(
         "GEMINI_CONVERSATIONS_PATH", "/var/lib/gemini-mcp/conversations.sqlite3"
     )).expanduser()
@@ -1309,9 +1311,14 @@ async def gemini_server_info() -> dict:
         "enabled_capabilities": [
             "chat", "persistent_conversations", "image_generation", "image_editing",
             "file_upload", "url_analysis", "account_scoped_model_catalog",
-            "verified_thinking_controls",
+            "versioned_protocol_adapter",
         ],
         "registered_tools": tools,
+        "registered_tool_count": len(tools),
+        "model_discovery": {
+            "mode": model_metadata["mode"],
+            "thinking_level_protocol_verified": model_metadata["thinking_level_protocol_verified"],
+        },
         "conversation_schema_version": schema_version,
         "upstream": inspect_upstream().public(),
     }
@@ -1517,6 +1524,21 @@ def _patch_client(gemini_client):
             headers = dict(kwargs.get("headers") or {})
             headers.update(configured_headers)
             kwargs["headers"] = headers
+        configured_fields = current_request_fields()
+        if method == "POST" and "StreamGenerate" in str(url) and configured_fields:
+            data = kwargs.get("data")
+            if isinstance(data, dict) and "f.req" in data:
+                outer = json.loads(data["f.req"])
+                inner = json.loads(outer[1])
+                required = max(configured_fields) + 1
+                if len(inner) < required:
+                    inner.extend([None] * (required - len(inner)))
+                for index, value in configured_fields.items():
+                    inner[index] = value
+                outer[1] = json.dumps(inner)
+                data = dict(data)
+                data["f.req"] = json.dumps(outer)
+                kwargs["data"] = data
         if method == "POST" and "StreamGenerate" in str(url) and _image_mode.get():
             headers = kwargs.get("headers") or {}
 
