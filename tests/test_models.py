@@ -9,9 +9,11 @@ from gemini_webapi_mcp.models import (
     ModelSelectionError,
     capabilities_json,
     current_request_fields,
+    discover_authenticated_models,
     discovery_metadata,
     discover_models,
     model_request_context,
+    parse_authenticated_models,
     resolve_model,
     selector_evidence_sha256,
 )
@@ -187,3 +189,58 @@ def test_discovery_metadata_marks_observed_client_attribute_without_claiming_rou
     assert metadata["mode"] == "client_attribute_observation"
     assert metadata["client_attributes_with_values"] == ["available_models"]
     assert metadata["authenticated_account_capability_endpoint"] is False
+
+
+def _get_user_status_frame():
+    body = [None] * 18
+    body[15] = [
+        ["flash-id", "Flash", None, None, None, None, None, None, None, 1, None, "Gemini Flash"],
+        ["lite-id", "Flash Lite", None, None, None, None, None, None, None, 6, None, "Gemini Flash Lite"],
+        ["pro-id", "Pro", None, None, None, None, None, None, None, 3, None, "Gemini Pro"],
+    ]
+    body[16] = [8]
+    body[17] = [19]
+    return [["wrb.fr", "otAQ7b", json.dumps(body)]]
+
+
+def test_authenticated_model_catalog_builds_account_specific_routes():
+    models = parse_authenticated_models(_get_user_status_frame())
+    assert [item.id for item in models] == ["gemini-flash", "gemini-flash-lite", "gemini-pro"]
+    assert all(item.source == "authenticated_rpc" for item in models)
+    assert all(item.confidence == "verified" for item in models)
+    selection = resolve_model(models, "gemini-pro")
+    assert selection.upstream_model == "unspecified"
+    header = json.loads(dict(selection.request_headers)["x-goog-ext-525001261-jspb"])
+    assert header[4] == "pro-id"
+    assert header[8] == [4, 5, 6, 8]
+    assert header[11] == 2
+    assert header[14] == 3
+    legacy_flash = resolve_model(models, "gemini-3.0-flash")
+    assert legacy_flash.id == "gemini-flash"
+    assert json.loads(dict(legacy_flash.request_headers)["x-goog-ext-525001261-jspb"])[4] == "flash-id"
+
+
+def test_authenticated_discovery_uses_existing_client_session():
+    class Response:
+        text = "ignored by patched parser"
+
+    class Client:
+        async def _batch_execute(self, payloads):
+            assert payloads[0].rpcid == "otAQ7b"
+            return Response()
+
+    import gemini_webapi_mcp.models as models_module
+    original = models_module.parse_authenticated_models
+    models_module.parse_authenticated_models = lambda _payload: parse_authenticated_models(_get_user_status_frame())
+    try:
+        discovered = asyncio.run(discover_authenticated_models(Client()))
+    finally:
+        models_module.parse_authenticated_models = original
+    assert [item.id for item in discovered] == ["gemini-flash", "gemini-flash-lite", "gemini-pro"]
+
+
+def test_authenticated_catalog_does_not_invent_independent_thinking_levels():
+    models = parse_authenticated_models(_get_user_status_frame())
+    with pytest.raises(ModelSelectionError) as error:
+        resolve_model(models, "gemini-flash", "high")
+    assert error.value.code == "thinking_not_supported"
