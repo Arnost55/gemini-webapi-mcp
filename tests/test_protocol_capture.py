@@ -46,3 +46,11 @@ def test_capture_rejects_unknown_thinking_level():
             "model_id": "x", "label": "X",
             "captures": [{"thinking_level": "ultra", "model_header": "[]", "f_req": _f_req(1, 1)}],
         })
+
+
+def test_capture_rejects_duplicate_thinking_level():
+    capture = {"thinking_level": "low", "model_header": "[]", "f_req": _f_req(1, 1)}
+    with pytest.raises(ValueError, match="duplicate capture"):
+        sanitize_capture({
+            "model_id": "x", "label": "X", "captures": [capture, dict(capture)],
+        })
