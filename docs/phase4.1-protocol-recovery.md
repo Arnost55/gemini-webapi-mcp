@@ -13,6 +13,23 @@ The authorized cloud browser had no signed-in Gemini session. The live MCP
 session could execute requests but exposed no request-capture diagnostic.
 Therefore no user-account modern route or thinking-level mapping is claimed.
 
+### Follow-up upstream audit (2026-10-14)
+
+The maintained `HanaokaYuzu/Gemini-API` branch was inspected at commit
+`1ad0d4a93e505e77c79769d78ef2997641f973c8` (package `2.1.1.post2`). It now
+parses account-scoped models from the authenticated `GetUserStatus` RPC and
+builds `x-goog-ext-525001261-jspb` headers from the returned model id, capacity,
+and model number. This proves that authenticated discovery is implemented
+upstream, but not which routes the user's account receives.
+
+That commit is not a safe drop-in upgrade. A clean compatibility run fails
+during test collection because `parse_response_by_frame` and
+`RequestTimeoutError` were removed or replaced, and the MCP image/download
+adapter relies on other old client internals. The maintained branch also still
+serializes only an `extended_thinking` boolean; it does not expose independently
+verified low/medium/high web controls. The dependency pin therefore remains
+unchanged pending a complete migration and authenticated regression run.
+
 ## Public-source observations, not accepted mappings
 
 Two maintained independent Gemini-web implementations now use private request
@@ -35,9 +52,15 @@ Versioned configured catalogs may now carry:
 - a protocol version and SHA-256 evidence fingerprint.
 
 The selection is applied through request-local `ContextVar` state immediately
-before StreamGenerate serialization. Concurrent calls cannot share it.
-Unfingerprinted private fields are ignored. Prompt, file, UUID, conversation,
-auth, and token slots cannot be configured through this adapter.
+before StreamGenerate serialization. Concurrent calls cannot share it. A route
+with invalid or missing selector evidence is rejected. Prompt, file, UUID,
+conversation, auth, and token slots cannot be configured through this adapter.
+
+The adapter recomputes the SHA-256 over normalized per-level selector metadata
+and fails the route closed if it differs from the supplied fingerprint. Only
+the model-routing header is accepted, preventing a catalog from injecting
+cookies, authorization, or arbitrary HTTP headers. Duplicate level captures
+and oversized or invalid model headers are rejected by the sanitizer.
 
 `gemini-protocol-capture` sanitizes an authorized local capture into this
 catalog format. Its regression fixture proves that prompts, conversation IDs,
@@ -92,7 +115,9 @@ and unbounded retries remain prohibited.
 
 ## Verification performed
 
-- Full automated suite: 127 passing after the final diagnostics correction.
+- Full automated suite: 130 passing after selector-evidence hardening.
+- Maintained-upstream compatibility probe: failed safely at collection on three
+  removed or renamed client surfaces; the production pin was not changed.
 - Existing real Streamable HTTP initialize/tools/list test: passing.
 - Direct local registration: 20 tools (Phase 4.0 evidence, unchanged).
 - Live connector: nine exposed tools, three ready opaque account records, three

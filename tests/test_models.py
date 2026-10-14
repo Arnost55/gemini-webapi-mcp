@@ -13,6 +13,7 @@ from gemini_webapi_mcp.models import (
     discover_models,
     model_request_context,
     resolve_model,
+    selector_evidence_sha256,
 )
 
 
@@ -55,28 +56,43 @@ def test_observed_ui_model_is_not_routable_without_evidence():
 
 
 def test_configured_model_can_declare_an_evidence_backed_route(monkeypatch):
+    model_header = '[1,null,"captured"]'
+    fingerprint = selector_evidence_sha256(
+        ["low", "medium", "high"],
+        {level: {"x-goog-ext-525001261-jspb": model_header}
+         for level in ("low", "medium", "high")},
+        {},
+    )
     monkeypatch.setenv("GEMINI_MODEL_CATALOG_JSON", json.dumps({"models": [{
         "id": "gemini-3.6-flash", "label": "Gemini 3.6 Flash",
         "upstream_model": "gemini-3.0-flash", "thinking_levels": ["low", "medium", "high"],
-        "default_thinking_level": "medium", "request_headers": {"x-test-route": "captured"},
-        "thinking_request_headers": {"high": {"x-test-thinking": "high-captured"}},
+        "default_thinking_level": "medium",
+        "thinking_request_headers": {
+            level: {"x-goog-ext-525001261-jspb": model_header}
+            for level in ("low", "medium", "high")
+        },
+        "protocol_version": "gemini-web-streamgenerate-v1",
+        "evidence_sha256": fingerprint,
     }]}))
     values = discover_models()
     selection = resolve_model(values, "gemini-3.6-flash", "high")
     assert selection.thinking_level == "high"
     assert dict(selection.request_headers) == {
-        "x-test-route": "captured", "x-test-thinking": "high-captured",
+        "x-goog-ext-525001261-jspb": model_header,
     }
 
 
 def test_versioned_capture_can_configure_request_local_selector_fields(monkeypatch):
+    fingerprint = selector_evidence_sha256(
+        ["low", "high"], {}, {"low": {17: [[1]], 80: 1}, "high": {17: [[3]], 80: 3}},
+    )
     monkeypatch.setenv("GEMINI_MODEL_CATALOG_JSON", json.dumps({"models": [{
         "id": "modern", "upstream_model": {"model_name": "modern", "model_header": {}},
         "thinking_levels": ["low", "high"],
         "request_fields": {"79": 3},
         "thinking_request_fields": {"low": {"17": [[1]], "80": 1}, "high": {"17": [[3]], "80": 3}},
         "protocol_version": "gemini-web-streamgenerate-v1",
-        "evidence_sha256": "a" * 64,
+        "evidence_sha256": fingerprint,
     }]}))
     selection = resolve_model(discover_models(), "modern", "high")
     assert dict(selection.request_fields) == {17: [[3]], 79: 3, 80: 3}
@@ -88,8 +104,31 @@ def test_unfingerprinted_private_protocol_fields_are_ignored(monkeypatch):
         "thinking_levels": ["high"], "request_fields": {"79": 3},
         "thinking_request_fields": {"high": {"80": 3}},
     }]}))
-    selection = resolve_model(discover_models(), "unsafe", "high")
-    assert selection.request_fields == ()
+    with pytest.raises(ModelSelectionError, match="no verified") as error:
+        resolve_model(discover_models(), "unsafe", "high")
+    assert error.value.code == "model_route_unverified"
+
+
+def test_tampered_capture_fingerprint_fails_closed(monkeypatch):
+    monkeypatch.setenv("GEMINI_MODEL_CATALOG_JSON", json.dumps({"models": [{
+        "id": "tampered", "upstream_model": "gemini-3.0-pro",
+        "thinking_levels": ["high"],
+        "thinking_request_fields": {"high": {"80": 3}},
+        "protocol_version": "gemini-web-streamgenerate-v1",
+        "evidence_sha256": "a" * 64,
+    }]}))
+    with pytest.raises(ModelSelectionError) as error:
+        resolve_model(discover_models(), "tampered", "high")
+    assert error.value.code == "model_route_unverified"
+
+
+def test_catalog_cannot_inject_arbitrary_http_headers(monkeypatch):
+    monkeypatch.setenv("GEMINI_MODEL_CATALOG_JSON", json.dumps({"models": [{
+        "id": "legacy", "upstream_model": "gemini-3.0-flash",
+        "request_headers": {"Authorization": "secret", "Cookie": "secret"},
+    }]}))
+    selection = resolve_model(discover_models(), "legacy")
+    assert selection.request_headers == ()
 
 
 def test_protocol_selector_fields_are_task_local():

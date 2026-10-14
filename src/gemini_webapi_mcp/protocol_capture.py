@@ -8,15 +8,18 @@ never copied. The result still requires authenticated behavioral validation.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from .models import _ALLOWED_PROTOCOL_FIELDS
+from .models import (
+    _ALLOWED_PROTOCOL_FIELDS,
+    MODEL_ROUTE_HEADER,
+    PROTOCOL_VERSION,
+    selector_evidence_sha256,
+)
 
-PROTOCOL_VERSION = "gemini-web-streamgenerate-v1"
-MODEL_HEADER = "x-goog-ext-525001261-jspb"
+MODEL_HEADER = MODEL_ROUTE_HEADER
 
 
 def _inner_fields(f_req: str) -> dict[str, Any]:
@@ -49,17 +52,24 @@ def sanitize_capture(raw: Mapping[str, Any]) -> dict[str, Any]:
         f_req = capture.get("f_req")
         if level not in {"low", "medium", "high"}:
             raise ValueError("thinking_level must be low, medium, or high")
+        if level in by_level:
+            raise ValueError(f"duplicate capture for thinking_level {level}")
         if not isinstance(header, str) or not isinstance(f_req, str):
             raise ValueError("model_header and f_req are required strings")
         # Parsing also proves this is JSON; never preserve unrelated headers.
+        if len(header) > 8192:
+            raise ValueError("model_header is too large")
         parsed_header = json.loads(header)
         if not isinstance(parsed_header, list):
             raise ValueError("model_header must be a JSON array")
         by_level[level] = {"header": header, "fields": _inner_fields(f_req)}
 
-    canonical = json.dumps(by_level, sort_keys=True, separators=(",", ":")).encode()
-    fingerprint = hashlib.sha256(canonical).hexdigest()
     levels = [level for level in ("low", "medium", "high") if level in by_level]
+    fingerprint = selector_evidence_sha256(
+        levels,
+        {level: {MODEL_HEADER: by_level[level]["header"]} for level in levels},
+        {level: by_level[level]["fields"] for level in levels},
+    )
     first = by_level[levels[0]]
     return {
         "protocol_version": PROTOCOL_VERSION,
