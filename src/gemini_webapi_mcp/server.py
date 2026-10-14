@@ -1290,6 +1290,7 @@ async def gemini_delete_account(account_id: str, confirm_delete: str, ctx: Conte
 async def gemini_server_info() -> dict:
     """Return non-sensitive build, protocol, capability, and schema metadata."""
     tools = sorted(name for name in mcp._tool_manager._tools if name.startswith("gemini_"))
+    model_metadata = discovery_metadata()
     db_path = Path(os.environ.get(
         "GEMINI_CONVERSATIONS_PATH", "/var/lib/gemini-mcp/conversations.sqlite3"
     )).expanduser()
@@ -1310,9 +1311,14 @@ async def gemini_server_info() -> dict:
         "enabled_capabilities": [
             "chat", "persistent_conversations", "image_generation", "image_editing",
             "file_upload", "url_analysis", "account_scoped_model_catalog",
-            "verified_thinking_controls",
+            "versioned_protocol_adapter",
         ],
         "registered_tools": tools,
+        "registered_tool_count": len(tools),
+        "model_discovery": {
+            "mode": model_metadata["mode"],
+            "thinking_level_protocol_verified": model_metadata["thinking_level_protocol_verified"],
+        },
         "conversation_schema_version": schema_version,
         "upstream": inspect_upstream().public(),
     }

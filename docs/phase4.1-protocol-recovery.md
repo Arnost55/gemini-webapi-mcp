@@ -92,7 +92,7 @@ and unbounded retries remain prohibited.
 
 ## Verification performed
 
-- Full automated suite: 126 passing.
+- Full automated suite: 127 passing after the final diagnostics correction.
 - Existing real Streamable HTTP initialize/tools/list test: passing.
 - Direct local registration: 20 tools (Phase 4.0 evidence, unchanged).
 - Live connector: nine exposed tools, three ready opaque account records, three
