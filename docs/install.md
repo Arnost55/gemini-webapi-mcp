@@ -172,11 +172,19 @@ you explicitly configure `GEMINI_BROWSER_CHANNEL` or
 older image, rebuild and recreate the container; an environment variable does
 not download Chrome into an existing image.
 
-The login browser remains sandboxed. The image and launcher deliberately do
-not use `--no-sandbox`; Google can reject that unsupported command-line flag,
-and it would weaken the isolated login environment. If Chrome fails to start,
-fix the container runtime so its sandbox can initialize instead of adding that
-flag.
+The Playwright login path keeps its existing sandbox configuration. The direct
+Chrome handoff path follows `GEMINI_CHROMIUM_SANDBOX` exactly: `true` preserves
+Chrome's sandbox, while an explicit `false` adds `--no-sandbox` for constrained
+Docker-in-LXC deployments where the sandbox cannot initialize. Never disable
+the sandbox merely to work around Google's sign-in policy; the setting changes
+process isolation and does not bypass Google's browser checks.
+
+Direct Chrome waits for the virtual display and Chrome profile initialization
+before publishing login state. `GEMINI_BROWSER_STARTUP_TIMEOUT` controls that
+bounded wait and defaults to 10 seconds. Safe status diagnostics include only
+the executable basename, sandbox/display booleans, PID, return code, and an
+error category; browser stderr is drained to prevent deadlocks but never
+returned to clients.
 
 The container listens on port 8000, while Compose binds it to loopback.
 Chromium profiles and status data persist in the `gemini-state` volume. Keep
