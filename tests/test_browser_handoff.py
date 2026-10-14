@@ -96,7 +96,7 @@ def test_handoff_status_uses_basic_chromium_cookie_reader(monkeypatch, tmp_path:
     assert calls
 
 
-def test_handoff_reports_browser_process_failure(tmp_path: Path):
+def test_handoff_reports_display_failure(tmp_path: Path):
     broker = BrowserHandoffBroker(tmp_path, runner=lambda *args, **kwargs: ExitedProcess())
     session = broker.create()
     Path(session.status_file).write_text(json.dumps({"state": "starting"}), encoding="utf-8")
@@ -104,8 +104,25 @@ def test_handoff_reports_browser_process_failure(tmp_path: Path):
     state = broker.status(session.token)
     assert state["state"] == "error"
     assert state["ready"] is False
-    assert state["error"] == "browser_process_exited"
+    assert state["error"] == "display_unavailable"
     assert state["components"]["xvfb"] == "exited"
+
+
+def test_handoff_reports_chrome_failure_without_stopping_other_session(tmp_path: Path):
+    calls = 0
+
+    def runner(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return ExitedProcess() if calls == 4 else FakeProcess()
+
+    broker = BrowserHandoffBroker(tmp_path, runner=runner)
+    failed = broker.create()
+    healthy = broker.create()
+    state = broker.status(failed.token)
+    assert state["error"] == "browser_process_exited"
+    assert broker.status(healthy.token)["state"] == "starting"
+    assert failed.profile != healthy.profile
 
 
 def test_startup_revokes_previous_viewer_tokens(tmp_path: Path):
