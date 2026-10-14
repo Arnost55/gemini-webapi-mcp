@@ -212,6 +212,42 @@ def discover_models(client: Any | None = None) -> list[ModelCapability]:
     return list(unique.values()) or list(FALLBACKS)
 
 
+def discovery_metadata(client: Any | None = None) -> dict[str, Any]:
+    """Explain exactly what the local client can (and cannot) discover.
+
+    ``gemini-webapi`` currently ships static request routes only. Its model
+    enum is useful evidence that legacy routes are installed, but it is not an
+    authenticated account-capability endpoint and must never be presented as
+    one. This keeps a fallback catalog from looking like successful UI
+    discovery.
+    """
+    inspected_attributes = ("models", "available_models", "model_list", "supported_models")
+    exposed = []
+    if client is not None:
+        for attr in inspected_attributes:
+            try:
+                value = getattr(client, attr, None)
+                value = value() if callable(value) else value
+                if value:
+                    exposed.append(attr)
+            except Exception:
+                # Observation must not cause a network probe or affect chat.
+                continue
+    return {
+        "mode": "client_attribute_observation" if exposed else "legacy_route_fallback",
+        "client_attributes_with_values": exposed,
+        "client_attributes_checked": list(inspected_attributes),
+        "authenticated_account_capability_endpoint": False,
+        "thinking_level_protocol_verified": False,
+        "reason": (
+            "the installed gemini-webapi client exposes no authenticated model "
+            "enumeration or independent thinking-level control"
+            if not exposed
+            else "model metadata was observed from an installed client attribute; routes still require verification"
+        ),
+    }
+
+
 class ModelCatalogCache:
     """Small per-account TTL cache; client lifecycle invalidates it explicitly."""
 

@@ -7,6 +7,7 @@ from gemini_webapi_mcp.models import (
     ModelCatalogCache,
     ModelSelectionError,
     capabilities_json,
+    discovery_metadata,
     discover_models,
     resolve_model,
 )
@@ -74,3 +75,24 @@ def test_catalog_cache_is_account_scoped_and_invalidatable():
     cache.invalidate(("subject", "account-a"))
     assert ("subject", "account-a") not in cache._values
     assert ("subject", "account-b") in cache._values
+
+
+def test_discovery_metadata_does_not_misrepresent_static_routes_as_account_discovery():
+    class Client:
+        pass
+
+    metadata = discovery_metadata(Client())
+    assert metadata["mode"] == "legacy_route_fallback"
+    assert metadata["authenticated_account_capability_endpoint"] is False
+    assert metadata["thinking_level_protocol_verified"] is False
+    assert metadata["client_attributes_with_values"] == []
+
+
+def test_discovery_metadata_marks_observed_client_attribute_without_claiming_route_verification():
+    class Client:
+        available_models = [{"id": "observed"}]
+
+    metadata = discovery_metadata(Client())
+    assert metadata["mode"] == "client_attribute_observation"
+    assert metadata["client_attributes_with_values"] == ["available_models"]
+    assert metadata["authenticated_account_capability_endpoint"] is False
