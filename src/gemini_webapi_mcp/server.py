@@ -34,6 +34,7 @@ from .models import (
     ModelCatalogCache,
     ModelSelectionError,
     capabilities_json,
+    current_request_fields,
     current_request_headers,
     discovery_metadata,
     model_request_context,
@@ -1517,6 +1518,21 @@ def _patch_client(gemini_client):
             headers = dict(kwargs.get("headers") or {})
             headers.update(configured_headers)
             kwargs["headers"] = headers
+        configured_fields = current_request_fields()
+        if method == "POST" and "StreamGenerate" in str(url) and configured_fields:
+            data = kwargs.get("data")
+            if isinstance(data, dict) and "f.req" in data:
+                outer = json.loads(data["f.req"])
+                inner = json.loads(outer[1])
+                required = max(configured_fields) + 1
+                if len(inner) < required:
+                    inner.extend([None] * (required - len(inner)))
+                for index, value in configured_fields.items():
+                    inner[index] = value
+                outer[1] = json.dumps(inner)
+                data = dict(data)
+                data["f.req"] = json.dumps(outer)
+                kwargs["data"] = data
         if method == "POST" and "StreamGenerate" in str(url) and _image_mode.get():
             headers = kwargs.get("headers") or {}
 
