@@ -40,12 +40,13 @@ WebSocket request receives `101 Switching Protocols`, not `404`, `400`, or an
 HTML response. The request must remain on the same origin and include its
 short-lived viewer capability.
 
-The application now reports the tracked components (`xvfb`, `vnc`, `fluxbox`,
-and `chromium`) through the handoff status endpoint. A failed component yields
-`browser_process_exited` rather than leaving the user with a misleading
-connected black screen. `browser_start_failed` means Chromium could not be
-started; inspect the container logs for sandbox, executable, display, or
-profile-lock errors.
+The application reports the tracked components (`xvfb`, `vnc`, `fluxbox`, and
+`chromium`) through the handoff status endpoint. Direct Chrome uses specific
+safe categories: `browser_executable_missing`, `sandbox_initialization_failed`,
+`display_unavailable`, `browser_process_exited`, `browser_startup_timeout`,
+`profile_unavailable`, and `viewer_unavailable`. They contain no browser URLs,
+cookies, profile contents, or raw stderr. `GEMINI_BROWSER_STARTUP_TIMEOUT`
+controls the bounded initialization wait and defaults to 10 seconds.
 
 ## Recovery sequence
 
@@ -59,7 +60,8 @@ profile-lock errors.
    service markers; it does not terminate unrelated desktop processes.
 5. If the browser starts but Google rejects the sign-in, record that as a
    Google compatibility limitation. Do not add stealth flags, user-agent
-   spoofing, webdriver removal, or `--no-sandbox`.
+   spoofing, webdriver removal, or change sandboxing merely to bypass that
+   rejection.
 
 The Gemini session supervisor performs its lightweight session check every five
 minutes by default. A valid server-side PSID is required before it publishes a
