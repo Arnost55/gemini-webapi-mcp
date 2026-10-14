@@ -241,6 +241,28 @@ def test_generic_upstream_candidate_is_not_returned_as_success():
         _response_text(Response(), operation="chat")
 
 
+def test_live_flash_generic_failure_phrase_is_not_returned_as_success():
+    class Response:
+        candidates = [object()]
+        text = "I seem to be encountering an error. Can I try something else for you?"
+
+    with pytest.raises(RuntimeError, match="rejected"):
+        _response_text(Response(), operation="chat")
+
+
+def test_upload_attribute_error_identifies_client_incompatibility():
+    result = _handle_error(AttributeError("'Response' object has no attribute 'headers'"), operation="upload")
+    assert result.startswith("Error: upload_client_incompatible")
+    assert "headers" in result
+
+
+def test_image_account_restriction_is_not_reported_as_implementation_failure():
+    from gemini_webapi.exceptions import ImageGenerationBlocked
+
+    result = _handle_error(ImageGenerationBlocked("image creation isn't available"))
+    assert result.startswith("Error: image_generation_unavailable")
+
+
 def test_missing_candidate_is_response_parse_error():
     class Response:
         candidates = []
