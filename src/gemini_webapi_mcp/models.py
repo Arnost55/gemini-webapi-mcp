@@ -18,6 +18,10 @@ import time
 from typing import Any, Iterable, Mapping
 
 
+_GET_USER_STATUS_RPC = "otAQ7b"
+_MODEL_CAPABILITIES = (4, 5, 6, 8)
+
+
 class ModelSelectionError(ValueError):
     """A requested model or thinking level cannot be used safely."""
 
@@ -324,6 +328,131 @@ def discover_models(client: Any | None = None) -> list[ModelCapability]:
     return list(unique.values()) or list(FALLBACKS)
 
 
+def _nested(value: Any, path: Iterable[int], default: Any = None) -> Any:
+    for index in path:
+        if not isinstance(value, list) or index >= len(value):
+            return default
+        value = value[index]
+    return value
+
+
+def _model_slug(model_id: str, category: str, display_name: str) -> str:
+    """Use the account-provided category as the stable public selector."""
+    name = category.strip() or display_name.strip() or model_id
+    slug = "-".join(name.lower().replace("_", "-").split())
+    return slug if slug.startswith("gemini-") else f"gemini-{slug}"
+
+
+def _account_capacity(tier_flags: Any, capability_flags: Any) -> tuple[int, int]:
+    tiers = tier_flags if isinstance(tier_flags, list) else []
+    capabilities = capability_flags if isinstance(capability_flags, list) else []
+    if 21 in tiers:
+        return 1, 13
+    if 22 in tiers:
+        return 2, 13
+    if 115 in capabilities:
+        return 4, 12
+    if 16 in tiers or 106 in capabilities:
+        return 3, 12
+    return ((2, 12) if 8 in tiers or 19 in capabilities else (1, 12))
+
+
+def parse_authenticated_models(payload: str | list[Any]) -> list[ModelCapability]:
+    """Parse the authenticated GetUserStatus response into verified routes.
+
+    This is a deliberately small backport of maintained upstream's dynamic
+    ``AvailableModel`` parser. The response itself supplies model IDs, model
+    numbers and account capacity; no static modern identifiers are accepted.
+    """
+    if isinstance(payload, str):
+        try:
+            from gemini_webapi.utils import extract_json_from_response
+            frames = extract_json_from_response(payload)
+        except (ImportError, ValueError, TypeError):
+            return []
+    elif isinstance(payload, list):
+        frames = payload
+    else:
+        return []
+
+    found: list[ModelCapability] = []
+    for frame in frames:
+        if not isinstance(frame, list) or _nested(frame, [1]) != _GET_USER_STATUS_RPC:
+            continue
+        body = _nested(frame, [2])
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+        models = _nested(body, [15])
+        if not isinstance(models, list):
+            continue
+        capacity, capacity_field = _account_capacity(_nested(body, [16], []), _nested(body, [17], []))
+        for raw in models:
+            if not isinstance(raw, list):
+                continue
+            model_id = _nested(raw, [0])
+            if not isinstance(model_id, str) or not model_id:
+                continue
+            category = str(_nested(raw, [1], "") or _nested(raw, [10], "") or "")
+            display = str(_nested(raw, [11], "") or _nested(raw, [19], "") or category or model_id)
+            number = _nested(raw, [17])
+            if not isinstance(number, int):
+                number = _nested(raw, [9], 1)
+            if not isinstance(number, int):
+                number = 1
+            header_values: list[Any] = [
+                1, None, None, None, model_id, None, None, 0,
+                list(_MODEL_CAPABILITIES), None, None,
+            ]
+            if capacity_field == 13:
+                header_values.append(None)
+            header_values.extend([capacity, None, None, number])
+            header = json.dumps(header_values, separators=(",", ":"))
+            route_headers = {
+                MODEL_ROUTE_HEADER: header,
+                "x-goog-ext-73010989-jspb": "[0]",
+                "x-goog-ext-73010990-jspb": "[0,0,0]",
+            }
+            found.append(ModelCapability(
+                id=_model_slug(model_id, category, display),
+                label=display,
+                reasoning="think" in (category + " " + display).lower(),
+                source="authenticated_rpc",
+                confidence="verified",
+                available="yes",
+                # The old client cannot resolve modern names. Let it build an
+                # unspecified request while our request-local patch applies
+                # the exact account-derived selector headers.
+                upstream_model="unspecified",
+                request_headers=tuple(sorted(route_headers.items())),
+                protocol_version=PROTOCOL_VERSION,
+            ))
+        break
+    unique: dict[str, ModelCapability] = {}
+    for capability in found:
+        unique.setdefault(capability.id, capability)
+    return list(unique.values())
+
+
+async def discover_authenticated_models(client: Any) -> list[ModelCapability]:
+    """Query GetUserStatus through the already-authenticated client session."""
+    batch = getattr(client, "_batch_execute", None)
+    if not callable(batch):
+        return []
+
+    class _RPC:
+        rpcid = _GET_USER_STATUS_RPC
+
+        @staticmethod
+        def serialize() -> list[Any]:
+            return [_GET_USER_STATUS_RPC, "[]", None, "generic"]
+
+    response = await batch([_RPC()])
+    return parse_authenticated_models(getattr(response, "text", ""))
+
+
 def discovery_metadata(client: Any | None = None) -> dict[str, Any]:
     """Explain exactly what the local client can (and cannot) discover.
 
@@ -384,10 +513,28 @@ class ModelCatalogCache:
         else:
             self._values.pop(key, None)
 
+    def set(self, key: tuple[str, str], values: list[ModelCapability]) -> None:
+        if values:
+            self._values[key] = (time.time(), values)
+
 
 def resolve_model(capabilities: Iterable[ModelCapability], model: str, thinking_level: str | None = None) -> ModelSelection:
     """Resolve only a model with a locally verified request route."""
-    capability = next((item for item in capabilities if item.id == model), None)
+    available = list(capabilities)
+    capability = next((item for item in available if item.id == model), None)
+    # Preserve the public legacy Flash/Pro selectors while replacing their
+    # stale hardcoded route IDs with the authenticated account's same-family
+    # route. This is identifier rotation, not cross-model substitution.
+    authenticated_aliases = {
+        "gemini-3.0-flash": "gemini-flash",
+        "gemini-3.0-pro": "gemini-pro",
+    }
+    if capability is None and model in authenticated_aliases:
+        target = authenticated_aliases[model]
+        capability = next(
+            (item for item in available if item.source == "authenticated_rpc" and item.id == target),
+            None,
+        )
     if capability is None:
         raise ModelSelectionError("model_unavailable", "requested model is not present in this account's model catalog")
     if capability.upstream_model is None:
