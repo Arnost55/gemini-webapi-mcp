@@ -20,6 +20,7 @@ import re
 import string
 import shutil
 import sys
+import tempfile
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -36,6 +37,7 @@ from .models import (
     capabilities_json,
     current_request_fields,
     current_request_headers,
+    discover_authenticated_models,
     discovery_metadata,
     model_request_context,
     resolve_model,
@@ -606,6 +608,15 @@ class _AccountClientManager:
             refresh_interval=UPSTREAM_REFRESH_INTERVAL,
         )
         _patch_client(client)
+        try:
+            discovered = await discover_authenticated_models(client)
+            self.model_catalog.set(key, discovered)
+            if discovered:
+                logger.info("Discovered %d authenticated Gemini model routes for account %s", len(discovered), key[1])
+        except Exception:
+            # Discovery is additive. A protocol drift here must not make an
+            # otherwise healthy authenticated chat client unusable.
+            logger.warning("Authenticated Gemini model discovery failed for account %s", key[1], exc_info=True)
         self._cookie_pairs[key] = (psid, psidts)
         self._profiles[key] = profile
         return client
@@ -1362,6 +1373,7 @@ async def gemini_list_models(ctx: Context) -> dict:
     key = manager.conversation_owner(ctx)
     try:
         models, discovered_at = manager.model_catalog.get(key, client)
+        authenticated = any(item.source == "authenticated_rpc" for item in models)
         return {
             "models": [item.public(discovered_at=discovered_at) for item in models],
             "discovery": {
@@ -1369,6 +1381,11 @@ async def gemini_list_models(ctx: Context) -> dict:
                 "cached": True,
                 "thinking_controls": "only listed when a verified route is configured",
                 **discovery_metadata(client),
+                **({
+                    "mode": "authenticated_get_user_status",
+                    "authenticated_account_capability_endpoint": True,
+                    "reason": "models and routes were returned for this authenticated account",
+                } if authenticated else {}),
             },
         }
     except Exception as exc:
@@ -1388,7 +1405,10 @@ async def _select_model(ctx: Context, client, model: str | None, thinking_level:
     manager = ctx.request_context.lifespan_context["account_clients"]
     key = manager.conversation_owner(ctx)
     capabilities, _ = manager.model_catalog.get(key, client)
-    return resolve_model(capabilities, model or DEFAULT_MODEL, thinking_level)
+    requested = model
+    if requested is None and any(item.source == "authenticated_rpc" for item in capabilities):
+        requested = capabilities[0].id
+    return resolve_model(capabilities, requested or DEFAULT_MODEL, thinking_level)
 
 
 def _get_sessions(ctx: Context) -> dict:
@@ -1741,6 +1761,7 @@ class _UpstreamRejectedError(RuntimeError):
 
 _GENERIC_UPSTREAM_FAILURES = (
     "sorry, something went wrong",
+    "i seem to be encountering an error",
     "i encountered an error doing what you asked",
     "i'm having a hard time fulfilling your request",
     "i’m having a hard time fulfilling your request",
@@ -1789,6 +1810,12 @@ def _response_text(response, *, operation: str) -> str:
 
 def _handle_error(e: Exception, *, operation: str | None = None) -> str:
     from gemini_webapi import AuthError, APIError, RequestTimeoutError
+    from gemini_webapi.exceptions import (
+        ImageGenerationBlocked,
+        ModelInvalid,
+        RateLimitExceeded,
+        UsageLimitExceeded,
+    )
 
     if isinstance(e, ModelSelectionError):
         return f"Error: {e.code} — {e}"
@@ -1796,6 +1823,12 @@ def _handle_error(e: Exception, *, operation: str | None = None) -> str:
         return f"Error: response_parse_error — {e}"
     if isinstance(e, _UpstreamRejectedError):
         return f"Error: upstream_rejected — {e}"
+    if isinstance(e, ImageGenerationBlocked):
+        return "Error: image_generation_unavailable — Gemini reports that image generation is unavailable for this account or region."
+    if isinstance(e, ModelInvalid):
+        return f"Error: model_unavailable — {e}"
+    if isinstance(e, (RateLimitExceeded, UsageLimitExceeded)):
+        return f"Error: rate_limited — {e}"
     if isinstance(e, AuthError):
         return (
             "Error: authentication_error — Cookies may have expired. "
@@ -1833,6 +1866,11 @@ def _handle_error(e: Exception, *, operation: str | None = None) -> str:
     if isinstance(e, (asyncio.TimeoutError, TimeoutError)):
         return "Error: request_timeout — Gemini did not respond before the configured timeout."
     if operation == "upload":
+        if isinstance(e, AttributeError):
+            # AttributeError used to be returned without the missing attribute,
+            # making the library/API mismatch impossible to identify remotely.
+            detail = re.sub(r"[\r\n]+", " ", str(e)).strip()
+            return f"Error: upload_client_incompatible — {detail or 'the upload client API is incompatible'}"
         return f"Error: upload_failed — {type(e).__name__}"
     return f"Error: unknown_upstream_error — {type(e).__name__}"
 
@@ -2426,7 +2464,7 @@ async def gemini_upload_file_bytes(
         selection = await _select_model(ctx, client, model, thinking_level)
         account_clients = ctx.request_context.lifespan_context["account_clients"]
         account = re.sub(r"[^A-Za-z0-9_.-]", "_", account_clients.conversation_owner(ctx)[1])
-        temp_dir = Path(shutil.mkdtemp(prefix=f"gemini-upload-{account}-"))
+        temp_dir = Path(tempfile.mkdtemp(prefix=f"gemini-upload-{account}-"))
         temp_path = temp_dir / safe_name
         temp_path.write_bytes(data)
         async with account_clients.request_slot(ctx):
