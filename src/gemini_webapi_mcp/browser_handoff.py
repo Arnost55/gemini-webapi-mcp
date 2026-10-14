@@ -407,7 +407,14 @@ class BrowserHandoffBroker:
             }
             if state not in {"ready", "error", "stopped"} and "exited" in components.values():
                 state = "error"
-                data.setdefault("error", "browser_process_exited")
+                if components.get("xvfb") == "exited":
+                    data.setdefault("error", "display_unavailable")
+                elif components.get("vnc") == "exited":
+                    data.setdefault("error", "viewer_unavailable")
+                elif components.get("chromium") == "exited":
+                    data.setdefault("error", "browser_process_exited")
+                else:
+                    data.setdefault("error", "browser_start_failed")
             result = {
                 "state": state,
                 "ready": state == "ready" and "exited" not in components.values(),
