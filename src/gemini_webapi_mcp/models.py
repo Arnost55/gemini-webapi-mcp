@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass
+import hashlib
 import json
 import os
 import time
@@ -76,6 +77,8 @@ FALLBACKS = (
 )
 
 _VALID_THINKING_LEVELS = frozenset({"low", "medium", "high"})
+PROTOCOL_VERSION = "gemini-web-streamgenerate-v1"
+MODEL_ROUTE_HEADER = "x-goog-ext-525001261-jspb"
 _request_headers: ContextVar[Mapping[str, str] | None] = ContextVar(
     "gemini_model_request_headers", default=None
 )
@@ -145,6 +148,38 @@ def _as_levels(value: Any) -> tuple[str, ...]:
 _ALLOWED_PROTOCOL_FIELDS = frozenset({17, 31, 79, 80, 91, 96})
 
 
+def _model_header(value: Any) -> str | None:
+    """Return a bounded jspb model header, or fail closed."""
+    if not isinstance(value, str) or len(value) > 8192:
+        return None
+    try:
+        decoded = json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return value if isinstance(decoded, list) else None
+
+
+def selector_evidence_sha256(
+    levels: Iterable[str],
+    thinking_headers: Mapping[str, Mapping[str, str]],
+    thinking_fields: Mapping[str, Mapping[int | str, Any]],
+) -> str:
+    """Fingerprint exactly the per-level selector metadata the adapter applies."""
+    evidence: dict[str, dict[str, Any]] = {}
+    for level in ("low", "medium", "high"):
+        if level not in levels:
+            continue
+        headers = thinking_headers.get(level, {})
+        header = _model_header(headers.get(MODEL_ROUTE_HEADER))
+        fields = _as_fields(thinking_fields.get(level, {}))
+        evidence[level] = {
+            "header": header or "",
+            "fields": {str(index): value for index, value in fields},
+        }
+    canonical = json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(canonical).hexdigest()
+
+
 def _as_fields(value: Any) -> tuple[tuple[int, Any], ...]:
     """Accept only known model/thinking selector slots, never prompt/session slots."""
     if not isinstance(value, Mapping):
@@ -173,17 +208,21 @@ def _from_mapping(raw: Mapping[str, Any], *, source: str, confidence: str) -> Mo
     # legacy client's Model.from_name can route it. Only configured entries may
     # provide an explicit upstream route.
     upstream = raw.get("upstream_model") if source == "configured" else None
-    headers = raw.get("request_headers", {}) if source == "configured" else {}
-    if not isinstance(headers, Mapping) or not all(isinstance(k, str) and isinstance(v, str) for k, v in headers.items()):
-        headers = {}
+    raw_headers = raw.get("request_headers", {}) if source == "configured" else {}
+    headers: dict[str, str] = {}
+    if isinstance(raw_headers, Mapping):
+        header = _model_header(raw_headers.get(MODEL_ROUTE_HEADER))
+        if header is not None:
+            headers[MODEL_ROUTE_HEADER] = header
     raw_thinking_headers = raw.get("thinking_request_headers", {}) if source == "configured" else {}
     thinking_headers: list[tuple[str, tuple[tuple[str, str], ...]]] = []
     if isinstance(raw_thinking_headers, Mapping):
         for level, value in raw_thinking_headers.items():
             if level not in levels or not isinstance(value, Mapping):
                 continue
-            if all(isinstance(key, str) and isinstance(header, str) for key, header in value.items()):
-                thinking_headers.append((level, tuple(sorted(value.items()))))
+            header = _model_header(value.get(MODEL_ROUTE_HEADER))
+            if header is not None:
+                thinking_headers.append((level, ((MODEL_ROUTE_HEADER, header),)))
     fields = _as_fields(raw.get("request_fields")) if source == "configured" else ()
     raw_thinking_fields = raw.get("thinking_request_fields", {}) if source == "configured" else {}
     thinking_fields: list[tuple[str, tuple[tuple[int, Any], ...]]] = []
@@ -194,11 +233,27 @@ def _from_mapping(raw: Mapping[str, Any], *, source: str, confidence: str) -> Mo
                 thinking_fields.append((level, mapped))
     protocol_version = raw.get("protocol_version") if isinstance(raw.get("protocol_version"), str) else None
     evidence_sha256 = raw.get("evidence_sha256") if isinstance(raw.get("evidence_sha256"), str) else None
-    # Modern private-protocol fields are accepted only with a versioned,
-    # fingerprinted capture. Legacy header-only catalogs remain compatible.
-    if (fields or thinking_fields) and not (
-        protocol_version and evidence_sha256 and len(evidence_sha256) == 64
-    ):
+    # Modern private-protocol selectors are accepted only when their exact
+    # normalized values match the capture fingerprint.
+    normalized_thinking_headers = dict(thinking_headers)
+    normalized_thinking_fields = dict(thinking_fields)
+    computed_fingerprint = selector_evidence_sha256(
+        levels,
+        {level: dict(value) for level, value in normalized_thinking_headers.items()},
+        {level: dict(value) for level, value in normalized_thinking_fields.items()},
+    )
+    evidence_valid = (
+        protocol_version == PROTOCOL_VERSION
+        and evidence_sha256 == computed_fingerprint
+        and bool(levels)
+    )
+    selector_present = bool(headers or thinking_headers or fields or thinking_fields)
+    if selector_present and not evidence_valid:
+        # Do not leave a configured modern model looking routable after its
+        # rejected selector data has been stripped.
+        upstream = None
+        headers = {}
+        thinking_headers = []
         fields = ()
         thinking_fields = []
     return ModelCapability(
