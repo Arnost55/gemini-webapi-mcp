@@ -32,6 +32,7 @@ from urllib.parse import parse_qsl, urlencode, quote, urlsplit, urlunsplit
 
 from mcp.server.fastmcp import FastMCP, Context
 from .models import (
+    MODEL_ROUTE_HEADER,
     ModelCatalogCache,
     ModelSelectionError,
     capabilities_json,
@@ -1495,6 +1496,86 @@ _image_tokens: ContextVar[dict[str, str] | None] = ContextVar("gemini_image_toke
 _image_metadata: ContextVar[list | None] = ContextVar("gemini_image_metadata", default=None)
 
 
+def _modern_stream_request(
+    headers: dict,
+    data: dict,
+    *,
+    selector_session_id: str,
+    language: str = "en",
+    request_uuid: str | None = None,
+) -> tuple[dict, dict]:
+    """Apply the authenticated StreamGenerate request contract.
+
+    Maintained Gemini-API mirrors the discovered model number into f.req[79],
+    appends thinking mode and a client-session UUID to the model selector, and
+    binds a separate per-request UUID in both the body and headers.  The pinned
+    fork predates all of those fields.
+    """
+    headers = dict(headers)
+    data = dict(data)
+    header_value = headers.get(MODEL_ROUTE_HEADER)
+    if not isinstance(header_value, str):
+        return headers, data
+    try:
+        model_header = json.loads(header_value)
+        outer = json.loads(data["f.req"])
+        inner = json.loads(outer[1])
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return headers, data
+    if not isinstance(model_header, list) or not isinstance(inner, list):
+        return headers, data
+
+    # Discovery produces the 15-element base selector. Avoid duplicating the
+    # two runtime fields if a caller already supplied a fully bound selector.
+    already_bound = len(model_header) >= 17 and isinstance(model_header[-1], str)
+    raw_model_number = model_header[-3] if already_bound else model_header[-1]
+    model_number = raw_model_number if isinstance(raw_model_number, int) else 1
+    if not already_bound:
+        model_header.extend([1, selector_session_id])
+    else:
+        model_header[-2] = 1
+        model_header[-1] = selector_session_id
+
+    if len(inner) < 81:
+        inner.extend([None] * (81 - len(inner)))
+    defaults = {
+        1: [language], 6: [1], 7: 1, 10: 1, 11: 0, 17: [[0]],
+        18: 0, 27: 1, 30: [4], 41: [1], 53: 0, 61: [], 68: 1,
+        79: model_number, 80: 1,
+    }
+    for index, value in defaults.items():
+        if inner[index] is None:
+            inner[index] = value
+
+    bound_uuid = request_uuid or str(uuid.uuid4()).upper()
+    inner[59] = bound_uuid
+    headers[MODEL_ROUTE_HEADER] = json.dumps(model_header, separators=(",", ":"))
+    headers["x-goog-ext-525005358-jspb"] = json.dumps([bound_uuid, 1], separators=(",", ":"))
+    headers.setdefault("X-Same-Domain", "1")
+    outer[1] = json.dumps(inner, separators=(",", ":"))
+    data["f.req"] = json.dumps(outer, separators=(",", ":"))
+    return headers, data
+
+
+def _image_parser_cookies(client, provided):
+    """Return the authenticated cookie jar used by GeneratedImage validation."""
+    try:
+        if provided is not None and len(provided) > 0:
+            return provided
+    except TypeError:
+        pass
+    for candidate in (
+        getattr(client, "cookies", None),
+        getattr(getattr(client, "client", None), "cookies", None),
+    ):
+        try:
+            if candidate is not None and len(candidate) > 0:
+                return candidate
+        except TypeError:
+            continue
+    return provided
+
+
 def _patch_client(gemini_client):
     """Patch GeminiClient for image generation and 2x download support.
 
@@ -1534,6 +1615,7 @@ def _patch_client(gemini_client):
 
     http = gemini_client.client  # curl_cffi.AsyncSession
     _orig_request = http.request
+    selector_session_id = str(uuid.uuid4()).upper()
 
     async def patched_request(method, url, **kwargs):
         # Configured model routes may carry evidence-backed request headers.
@@ -1559,6 +1641,15 @@ def _patch_client(gemini_client):
                 data = dict(data)
                 data["f.req"] = json.dumps(outer)
                 kwargs["data"] = data
+        if method == "POST" and "StreamGenerate" in str(url) and configured_headers:
+            headers, data = _modern_stream_request(
+                dict(kwargs.get("headers") or {}),
+                kwargs.get("data") if isinstance(kwargs.get("data"), dict) else {},
+                selector_session_id=selector_session_id,
+                language=os.environ.get("GEMINI_LANGUAGE", "en"),
+            )
+            kwargs["headers"] = headers
+            kwargs["data"] = data
         if method == "POST" and "StreamGenerate" in str(url) and _image_mode.get():
             headers = kwargs.get("headers") or {}
 
@@ -1566,13 +1657,13 @@ def _patch_client(gemini_client):
             # both jspb headers AND inner[59], all three must match.
             req_uuid = str(uuid.uuid4()).upper()
 
-            # Replace the model header with the exact browser shape for fast image
-            # generation, rather than string-patching the library's slow header.
-            # Browser: [1,null,null,null,"<id>",null,null,0,[4,5,6,8],null,null,2,null,null,1,1,"<UUID>"]
+            # Use the captured image selector as a base. Runtime thinking and
+            # session fields are bound below by the same modern serializer used
+            # for authenticated text models.
             if not _NO_REMAP:
                 headers["x-goog-ext-525001261-jspb"] = (
                     '[1,null,null,null,"' + _IMAGE_MODEL_ID + '",null,null,0,'
-                    + _IMAGE_MODEL_CAPS + ',null,null,2,null,null,1,1,"' + req_uuid + '"]'
+                    + _IMAGE_MODEL_CAPS + ',null,null,2,null,null,1]'
                 )
 
             headers["x-goog-ext-73010989-jspb"] = "[0]"
@@ -1629,6 +1720,16 @@ def _patch_client(gemini_client):
                     if _DEBUG_TIMING:
                         logger.warning("[req] patch failed: %s", _e)
 
+            headers, data = _modern_stream_request(
+                dict(kwargs.get("headers") or {}),
+                kwargs.get("data") if isinstance(kwargs.get("data"), dict) else {},
+                selector_session_id=selector_session_id,
+                language=os.environ.get("GEMINI_LANGUAGE", "en"),
+                request_uuid=req_uuid,
+            )
+            kwargs["headers"] = headers
+            kwargs["data"] = data
+
         return await _orig_request(method, url, **kwargs)
 
     http.request = patched_request
@@ -1660,6 +1761,7 @@ def _patch_client(gemini_client):
         if not isinstance(entry, dict) or "8" not in entry:
             return result
         generated_images = []
+        effective_cookies = _image_parser_cookies(gemini_client, cookies)
         for gen_img_data in entry["8"]:
             # Structure: [[[null, null, null, [null, 1, "filename.png", "url", ...], ...], ...]]
             url_arr = get_nested_value(gen_img_data, [0, 0, 3])
@@ -1681,7 +1783,7 @@ def _patch_client(gemini_client):
                             title=f"[Generated Image]",
                             alt="",
                             proxy=proxy,
-                            cookies=cookies,
+                            cookies=effective_cookies,
                             account_index=account_index,
                             session_kwargs=sk,
                         )
@@ -1865,6 +1967,9 @@ def _handle_error(e: Exception, *, operation: str | None = None) -> str:
         return f"Error: unknown_upstream_error — {detail}"
     if isinstance(e, (asyncio.TimeoutError, TimeoutError)):
         return "Error: request_timeout — Gemini did not respond before the configured timeout."
+    if operation == "image" and isinstance(e, ValueError):
+        detail = re.sub(r"[\r\n]+", " ", str(e)).strip()
+        return f"Error: image_generation_failed — {detail or 'Gemini returned invalid image metadata'}"
     if operation == "upload":
         if isinstance(e, AttributeError):
             # AttributeError used to be returned without the missing attribute,
@@ -2197,8 +2302,9 @@ async def gemini_generate_image(
     Args:
         prompt: Description of the image to generate, or editing instruction
                 (e.g. 'change the background to blue', 'make it a cartoon').
-        model: Model name. Defaults to gemini-3.0-flash-thinking
-               (Nano Banana 2, supports non-square aspect ratios).
+        model: Optional catalog model to validate for image generation. The
+               authenticated Flash family is supported; Flash-Lite and Pro
+               are rejected until an image route is independently verified.
         files: Optional list of file paths to images to edit/transform.
         conversation_id: Optional list of [cid, rid, rcid] from a previous
                          gemini_generate_image response to continue the conversation.
@@ -2219,6 +2325,13 @@ async def gemini_generate_image(
                 "image generation has no verified independent thinking-level request mapping",
             )
         client = await _get_client(ctx)
+        if model is not None:
+            selection = await _select_model(ctx, client, model)
+            if "flash" not in selection.id or "lite" in selection.id:
+                raise ModelSelectionError(
+                    "image_model_not_supported",
+                    "the requested catalog model has no verified image-generation route",
+                )
 
         # Validate input files
         resolved_files = []
@@ -2239,13 +2352,16 @@ async def gemini_generate_image(
                 if conversation_id:
                     chat = client.start_chat(
                         metadata=conversation_id,
-                        model=model or "gemini-3.0-flash-thinking",
+                        model="gemini-3.0-flash",
                     )
                     gen_coro = chat.send_message(
                         prompt, files=resolved_files or None, current_retry=UPSTREAM_RETRY_BUDGET
                     )
                 else:
-                    kwargs = {"model": model or "gemini-3.0-flash-thinking"}
+                    # The installed fork needs a known enum value to enter its
+                    # generator. _patch_client replaces this stale seed header
+                    # with the separately verified image-mode route.
+                    kwargs = {"model": "gemini-3.0-flash"}
                     if resolved_files:
                         kwargs["files"] = resolved_files
                     kwargs["current_retry"] = UPSTREAM_RETRY_BUDGET
@@ -2367,7 +2483,7 @@ async def gemini_generate_image(
         return json.dumps(result, ensure_ascii=False, indent=2)
 
     except Exception as e:
-        return _handle_error(e)
+        return _handle_error(e, operation="image")
     finally:
         # Reset request-local parser state even when an image download fails.
         if "tokens_token" in locals():
