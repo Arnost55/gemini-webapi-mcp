@@ -89,6 +89,9 @@ _request_headers: ContextVar[Mapping[str, str] | None] = ContextVar(
 _request_fields: ContextVar[Mapping[int, Any] | None] = ContextVar(
     "gemini_model_request_fields", default=None
 )
+_request_model_id: ContextVar[str | None] = ContextVar(
+    "gemini_model_request_id", default=None
+)
 
 
 def current_request_headers() -> Mapping[str, str]:
@@ -101,6 +104,11 @@ def current_request_fields() -> Mapping[int, Any]:
     return _request_fields.get() or {}
 
 
+def current_request_model_id() -> str | None:
+    """Public, account-scoped model name selected for this request."""
+    return _request_model_id.get()
+
+
 class model_request_context:
     """Apply a verified configured route to exactly one request."""
 
@@ -108,15 +116,18 @@ class model_request_context:
         self.selection = selection
         self._token = None
         self._fields_token = None
+        self._model_token = None
 
     def __enter__(self):
         self._token = _request_headers.set(dict(self.selection.request_headers))
         self._fields_token = _request_fields.set(dict(self.selection.request_fields))
+        self._model_token = _request_model_id.set(self.selection.id)
         return self
 
     def __exit__(self, *_exc):
         _request_headers.reset(self._token)
         _request_fields.reset(self._fields_token)
+        _request_model_id.reset(self._model_token)
 
 
 @dataclass(frozen=True)
