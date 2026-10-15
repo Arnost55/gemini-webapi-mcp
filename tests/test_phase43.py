@@ -1,10 +1,11 @@
 import asyncio
 import base64
 from contextlib import asynccontextmanager
+import json
 from pathlib import Path
 
 import gemini_webapi_mcp.server as server
-from gemini_webapi_mcp.models import ModelSelection
+from gemini_webapi_mcp.models import MODEL_ROUTE_HEADER, ModelSelection, parse_authenticated_models, resolve_model
 
 
 class _Response:
@@ -106,3 +107,94 @@ def test_upload_mime_validation_rejects_executable_suffix():
         assert "unsupported file type" in str(error)
     else:
         raise AssertionError("executable upload suffix must be rejected")
+
+
+def _catalog_frame():
+    body = [None] * 18
+    body[15] = [
+        ["lite-route", "Flash Lite", None, None, None, None, None, None, None, 6, None, "3.5 Flash-Lite"],
+        ["flash-route", "Flash", None, None, None, None, None, None, None, 1, None, "3.6 Flash"],
+        ["pro-route", "Pro", None, None, None, None, None, None, None, 3, None, "3.1 Pro"],
+    ]
+    body[16] = [8]
+    body[17] = [19]
+    return [["wrb.fr", "otAQ7b", json.dumps(body)]]
+
+
+def _old_request(selection):
+    inner = [None] * 73
+    inner[0] = ["protocol test", 0, None, None, None, None, 0]
+    return dict(selection.request_headers), {
+        "at": "redacted",
+        "f.req": json.dumps([None, json.dumps(inner)]),
+    }
+
+
+def test_modern_serializer_preserves_each_requested_model_and_mirrors_number():
+    models = parse_authenticated_models(_catalog_frame())
+    for model_name, route_id, model_number in (
+        ("gemini-flash-lite", "lite-route", 6),
+        ("gemini-flash", "flash-route", 1),
+        ("gemini-pro", "pro-route", 3),
+    ):
+        selection = resolve_model(models, model_name)
+        headers, data = _old_request(selection)
+        headers, data = server._modern_stream_request(
+            headers, data, selector_session_id="SELECTOR-SESSION", request_uuid="REQUEST-UUID"
+        )
+        model_header = json.loads(headers[MODEL_ROUTE_HEADER])
+        inner = json.loads(json.loads(data["f.req"])[1])
+        assert model_header[4] == route_id
+        assert model_header[15:] == [1, "SELECTOR-SESSION"]
+        assert inner[59] == "REQUEST-UUID"
+        assert inner[79] == model_number
+        assert inner[80] == 1
+        assert headers["x-goog-ext-525005358-jspb"] == '["REQUEST-UUID",1]'
+
+
+def test_modern_serializer_does_not_replace_requested_pro_with_flash_lite():
+    models = parse_authenticated_models(_catalog_frame())
+    selection = resolve_model(models, "gemini-pro")
+    headers, data = _old_request(selection)
+    headers, _ = server._modern_stream_request(
+        headers, data, selector_session_id="SESSION", request_uuid="REQUEST"
+    )
+    assert json.loads(headers[MODEL_ROUTE_HEADER])[4] == "pro-route"
+
+
+def test_modern_serializer_handles_capacity_field_13_without_losing_model_number():
+    frames = _catalog_frame()
+    body = json.loads(frames[0][2])
+    body[16] = [21]
+    frames[0][2] = json.dumps(body)
+    selection = resolve_model(parse_authenticated_models(frames), "gemini-pro")
+    headers, data = _old_request(selection)
+    headers, data = server._modern_stream_request(
+        headers, data, selector_session_id="SESSION", request_uuid="REQUEST"
+    )
+    model_header = json.loads(headers[MODEL_ROUTE_HEADER])
+    inner = json.loads(json.loads(data["f.req"])[1])
+    assert model_header[-3:] == [3, 1, "SESSION"]
+    assert inner[79] == 3
+
+
+def test_image_value_error_retains_safe_diagnostic_detail():
+    result = server._handle_error(ValueError("generated image metadata is malformed"), operation="image")
+    assert result == "Error: image_generation_failed — generated image metadata is malformed"
+
+
+def test_image_parser_recovers_authenticated_client_cookie_jar():
+    class Session:
+        cookies = {"__Secure-1PSID": "test-only-cookie"}
+
+    class Client:
+        cookies = {}
+        client = Session()
+
+    selected = server._image_parser_cookies(Client(), {})
+    assert selected == {"__Secure-1PSID": "test-only-cookie"}
+
+
+def test_image_parser_preserves_nonempty_parser_cookie_jar():
+    provided = {"__Secure-1PSID": "parser-cookie"}
+    assert server._image_parser_cookies(object(), provided) is provided
