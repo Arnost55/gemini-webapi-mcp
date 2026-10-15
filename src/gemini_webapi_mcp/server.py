@@ -47,6 +47,9 @@ from .models import (
 from .oauth import LocalOAuth
 from .browser_handoff import BrowserHandoffBroker
 from .viewer import DEFAULT_RFB_URL, content_security_policy, viewer_page
+from .protocol.serializer import bind_stream_request
+from .protocol.adapter import LegacyClientAdapter
+from .protocol.serializer import SERIALIZER_REVISION
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 
@@ -621,7 +624,10 @@ class _AccountClientManager:
             logger.warning("Authenticated Gemini model discovery failed for account %s", key[1], exc_info=True)
         self._cookie_pairs[key] = (psid, psidts)
         self._profiles[key] = profile
-        return client
+        # The third-party client is now quarantined behind the application
+        # protocol contract. Attribute proxying keeps the 20 MCP tools stable
+        # while they migrate incrementally to typed execute() requests.
+        return LegacyClientAdapter(client, discover_authenticated_models)
 
     async def refresh_cookies(self) -> None:
         async with self._lock:
@@ -1329,6 +1335,12 @@ async def gemini_server_info() -> dict:
             ),
             "stream_serializer": _STREAM_SERIALIZER_VERSION,
         },
+        "protocol": {
+            "adapter": "legacy-client-quarantine",
+            "adapter_version": "xob0t-4402e523-compat1",
+            "serializer_revision": SERIALIZER_REVISION,
+            "capability_policy": "account_scoped_verified_routes_only",
+        },
         "mcp_protocol_version": "2025-03-26",
         "enabled_capabilities": [
             "chat", "persistent_conversations", "image_generation", "image_editing",
@@ -1525,50 +1537,10 @@ def _modern_stream_request(
     binds a separate per-request UUID in both the body and headers.  The pinned
     fork predates all of those fields.
     """
-    headers = dict(headers)
-    data = dict(data)
-    header_value = headers.get(MODEL_ROUTE_HEADER)
-    if not isinstance(header_value, str):
-        return headers, data
-    try:
-        model_header = json.loads(header_value)
-        outer = json.loads(data["f.req"])
-        inner = json.loads(outer[1])
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-        return headers, data
-    if not isinstance(model_header, list) or not isinstance(inner, list):
-        return headers, data
-
-    # Discovery produces the 15-element base selector. Avoid duplicating the
-    # two runtime fields if a caller already supplied a fully bound selector.
-    already_bound = len(model_header) >= 17 and isinstance(model_header[-1], str)
-    raw_model_number = model_header[-3] if already_bound else model_header[-1]
-    model_number = raw_model_number if isinstance(raw_model_number, int) else 1
-    if not already_bound:
-        model_header.extend([1, selector_session_id])
-    else:
-        model_header[-2] = 1
-        model_header[-1] = selector_session_id
-
-    if len(inner) < 81:
-        inner.extend([None] * (81 - len(inner)))
-    defaults = {
-        1: [language], 6: [1], 7: 1, 10: 1, 11: 0, 17: [[0]],
-        18: 0, 27: 1, 30: [4], 41: [1], 53: 0, 61: [], 68: 1,
-        79: model_number, 80: 1,
-    }
-    for index, value in defaults.items():
-        if inner[index] is None:
-            inner[index] = value
-
-    bound_uuid = request_uuid or str(uuid.uuid4()).upper()
-    inner[59] = bound_uuid
-    headers[MODEL_ROUTE_HEADER] = json.dumps(model_header, separators=(",", ":"))
-    headers["x-goog-ext-525005358-jspb"] = json.dumps([bound_uuid, 1], separators=(",", ":"))
-    headers.setdefault("X-Same-Domain", "1")
-    outer[1] = json.dumps(inner, separators=(",", ":"))
-    data["f.req"] = json.dumps(outer, separators=(",", ":"))
-    return headers, data
+    return bind_stream_request(
+        headers, data, selector_session_id=selector_session_id,
+        language=language, request_uuid=request_uuid,
+    )
 
 
 def _image_parser_cookies(client, provided):
@@ -2750,7 +2722,7 @@ async def gemini_reset(ctx: Context) -> str:
 
         manager = ctx.request_context.lifespan_context["account_clients"]
         key = (subject, str(record["account"]))
-        manager.clients[key] = new_client
+        manager.clients[key] = LegacyClientAdapter(new_client, discover_authenticated_models)
         manager.model_catalog.invalidate(key)
         return "Gemini client re-initialised with fresh cookies."
 
