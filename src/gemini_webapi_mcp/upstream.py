@@ -8,8 +8,10 @@ version guesses through MCP tools.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from importlib.metadata import PackageNotFoundError, version
+from importlib.metadata import PackageNotFoundError, distribution, version
 import inspect
+import json
+from pathlib import Path
 from typing import Any
 
 
@@ -33,6 +35,8 @@ class UpstreamCompatibility:
     streaming_api: bool
     authenticated_model_discovery: bool
     independent_thinking_control: bool
+    module_origin: str | None
+    source_revision: str | None
     legacy_routes: tuple[str, ...]
     notes: tuple[str, ...]
 
@@ -51,16 +55,19 @@ def inspect_upstream() -> UpstreamCompatibility:
         installed = "missing"
 
     utf16 = streaming = False
+    module_origin = source_revision = None
     routes: list[str] = []
     notes: list[str] = []
     try:
         from gemini_webapi import GeminiClient
+        import gemini_webapi
         from gemini_webapi.constants import Model
         from gemini_webapi.utils import parse_response_by_frame
 
         streaming = callable(getattr(GeminiClient, "generate_content_stream", None))
         utf16 = "utf-16" in inspect.getsource(parse_response_by_frame).lower()
         routes = [item.model_name for item in Model if item.model_name != "unspecified"]
+        module_origin = str(Path(gemini_webapi.__file__).resolve())
     except (ImportError, AttributeError, TypeError) as exc:
         notes.append(f"local_surface_error:{type(exc).__name__}")
 
@@ -69,6 +76,15 @@ def inspect_upstream() -> UpstreamCompatibility:
         notes.append("installed_version_differs_from_audited_build")
     if set(routes) != set(LEGACY_ROUTE_NAMES):
         notes.append("legacy_route_set_changed")
+    try:
+        direct_url = distribution("gemini-webapi").read_text("direct_url.json")
+        if direct_url:
+            vcs_info = json.loads(direct_url).get("vcs_info", {})
+            revision = vcs_info.get("commit_id")
+            if isinstance(revision, str) and revision:
+                source_revision = revision
+    except (PackageNotFoundError, TypeError, ValueError, json.JSONDecodeError):
+        notes.append("installed_source_revision_unavailable")
     notes.append("web_protocol_is_undocumented_and_account_entitlements_are_not_enumerable")
     return UpstreamCompatibility(
         package="xob0t/Gemini-API",
@@ -80,6 +96,8 @@ def inspect_upstream() -> UpstreamCompatibility:
         streaming_api=streaming,
         authenticated_model_discovery=False,
         independent_thinking_control=False,
+        module_origin=module_origin,
+        source_revision=source_revision,
         legacy_routes=tuple(routes),
         notes=tuple(notes),
     )

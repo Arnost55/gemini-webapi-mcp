@@ -38,6 +38,7 @@ from .models import (
     capabilities_json,
     current_request_fields,
     current_request_headers,
+    current_request_model_id,
     discover_authenticated_models,
     discovery_metadata,
     model_request_context,
@@ -1316,9 +1317,18 @@ async def gemini_server_info() -> dict:
         schema_version = -1
     from .upstream import inspect_upstream
 
+    build_commit = os.environ.get("GEMINI_BUILD_COMMIT") or os.environ.get("GITHUB_SHA") or "unknown"
     return {
         "application_version": _app_version(),
-        "build_commit": os.environ.get("GEMINI_BUILD_COMMIT") or os.environ.get("GITHUB_SHA") or "unknown",
+        "build_commit": build_commit,
+        "build_provenance": {
+            "commit": build_commit,
+            "source": (
+                "GEMINI_BUILD_COMMIT" if os.environ.get("GEMINI_BUILD_COMMIT")
+                else "GITHUB_SHA" if os.environ.get("GITHUB_SHA") else "unavailable"
+            ),
+            "stream_serializer": _STREAM_SERIALIZER_VERSION,
+        },
         "mcp_protocol_version": "2025-03-26",
         "enabled_capabilities": [
             "chat", "persistent_conversations", "image_generation", "image_editing",
@@ -1494,6 +1504,10 @@ _image_lock = asyncio.Lock()
 _image_mode: ContextVar[bool] = ContextVar("gemini_image_mode", default=False)
 _image_tokens: ContextVar[dict[str, str] | None] = ContextVar("gemini_image_tokens", default=None)
 _image_metadata: ContextVar[list | None] = ContextVar("gemini_image_metadata", default=None)
+_request_diagnostics: ContextVar[dict | None] = ContextVar(
+    "gemini_request_diagnostics", default=None
+)
+_STREAM_SERIALIZER_VERSION = "modern-v2-locale-bound"
 
 
 def _modern_stream_request(
@@ -1642,6 +1656,13 @@ def _patch_client(gemini_client):
                 data["f.req"] = json.dumps(outer)
                 kwargs["data"] = data
         if method == "POST" and "StreamGenerate" in str(url) and configured_headers:
+            # Maintained Gemini-API binds the locale in both f.req[1] and the
+            # query string. The pinned fork only serialized the body value.
+            # Modern Flash and Pro reject that incomplete request even though
+            # Flash-Lite currently accepts it.
+            params = dict(kwargs.get("params") or {})
+            params["hl"] = os.environ.get("GEMINI_LANGUAGE", "en")
+            kwargs["params"] = params
             headers, data = _modern_stream_request(
                 dict(kwargs.get("headers") or {}),
                 kwargs.get("data") if isinstance(kwargs.get("data"), dict) else {},
@@ -1650,6 +1671,25 @@ def _patch_client(gemini_client):
             )
             kwargs["headers"] = headers
             kwargs["data"] = data
+            try:
+                model_header = json.loads(headers[MODEL_ROUTE_HEADER])
+                outer = json.loads(data["f.req"])
+                inner = json.loads(outer[1])
+                _request_diagnostics.set({
+                    "model": current_request_model_id() or "unknown",
+                    "serializer": _STREAM_SERIALIZER_VERSION,
+                    "model_number": inner[79] if len(inner) > 79 else None,
+                    "field_count": len(inner),
+                    "locale_bound": bool(params.get("hl")),
+                    "selector_session_bound": len(model_header) >= 17 and isinstance(model_header[-1], str),
+                    "request_uuid_bound": bool(headers.get("x-goog-ext-525005358-jspb")) and len(inner) > 59 and bool(inner[59]),
+                })
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                _request_diagnostics.set({
+                    "model": current_request_model_id() or "unknown",
+                    "serializer": _STREAM_SERIALIZER_VERSION,
+                    "serialization_valid": False,
+                })
         if method == "POST" and "StreamGenerate" in str(url) and _image_mode.get():
             headers = kwargs.get("headers") or {}
 
@@ -1730,7 +1770,13 @@ def _patch_client(gemini_client):
             kwargs["headers"] = headers
             kwargs["data"] = data
 
-        return await _orig_request(method, url, **kwargs)
+        response = await _orig_request(method, url, **kwargs)
+        diagnostics = _request_diagnostics.get()
+        if method == "POST" and "StreamGenerate" in str(url) and diagnostics is not None:
+            diagnostics = dict(diagnostics)
+            diagnostics["http_status"] = getattr(response, "status_code", "unknown")
+            _request_diagnostics.set(diagnostics)
+        return response
 
     http.request = patched_request
 
@@ -1906,7 +1952,17 @@ def _response_text(response, *, operation: str) -> str:
         raise _ResponseParseError(f"Gemini returned no text for {operation}")
     normalized = " ".join(text.split()).lower()
     if any(marker in normalized for marker in _GENERIC_UPSTREAM_FAILURES):
-        raise _UpstreamRejectedError(f"Gemini rejected the {operation} request")
+        diagnostics = _request_diagnostics.get() or {}
+        safe_keys = (
+            "model", "serializer", "model_number", "field_count",
+            "locale_bound", "selector_session_bound", "request_uuid_bound",
+            "http_status", "serialization_valid",
+        )
+        detail = ", ".join(
+            f"{key}={diagnostics[key]}" for key in safe_keys if key in diagnostics
+        )
+        suffix = f" ({detail}, parser_stage=candidate_text)" if detail else ""
+        raise _UpstreamRejectedError(f"Gemini rejected the {operation} request{suffix}")
     return text
 
 
