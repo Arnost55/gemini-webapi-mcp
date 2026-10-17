@@ -17,5 +17,6 @@ def test_publish_workflow_passes_and_verifies_immutable_commit():
     assert "assert p['commit'] == '${GITHUB_SHA}'" in workflow
     assert "'gemini_generate_image' in mcp._tool_manager._tools" in workflow
     assert 'image_ref="${REGISTRY}/${IMAGE_NAME,,}:sha-${GITHUB_SHA}"' in workflow
+    assert "--entrypoint /app/.venv/bin/python" in workflow
     assert "Smoke test container startup" in workflow
     assert "http://127.0.0.1:18000/mcp" in workflow

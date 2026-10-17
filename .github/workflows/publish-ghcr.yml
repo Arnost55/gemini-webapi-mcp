@@ -71,7 +71,7 @@ jobs:
         run: |
           image_ref="${REGISTRY}/${IMAGE_NAME,,}:sha-${GITHUB_SHA}"
           docker pull "$image_ref"
-          docker run --rm --entrypoint python "$image_ref" -c \
+          docker run --rm --entrypoint /app/.venv/bin/python "$image_ref" -c \
             "from gemini_webapi_mcp.build_info import build_provenance; from gemini_webapi_mcp.server import mcp; p=build_provenance(); assert p['commit'] == '${GITHUB_SHA}', p; assert 'gemini_generate_image' in mcp._tool_manager._tools"
 
       - name: Smoke test container startup
