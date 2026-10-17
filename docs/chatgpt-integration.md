@@ -1,10 +1,17 @@
 # ChatGPT integration
 
-Expose the server only behind HTTPS and configure ChatGPT's MCP connector with
-the URL `https://<your-host>/mcp` using Streamable HTTP. The server's public
-origin must match `GEMINI_PUBLIC_URL`. Complete the OAuth authorization and
-PKCE flow, then separately complete Gemini Web sign-in via browser handoff.
-OAuth does not authenticate you to Google.
+For the hosted service, configure ChatGPT's remote MCP connector with
+`https://gemini.proxmoxserver.dev/mcp` using Streamable HTTP. No local install,
+server, Docker, or registry-key setup is required. Complete the OAuth
+authorization and PKCE flow, then separately complete Gemini Web sign-in via
+browser handoff. These first-use authorizations are required; MCP OAuth does
+not authenticate you to Google.
+
+To self-host instead, expose the server only behind HTTPS and configure the
+connector with `https://<your-host>/mcp`; the server's public origin must match
+`GEMINI_PUBLIC_URL`. Hosted availability depends on the operator, while a
+self-hosted operator is responsible for service availability, storage, and
+security.
 
 Available tools cover account management, model/capability discovery, chat,
 conversation history, image generation, file upload, and URL analysis. Ask

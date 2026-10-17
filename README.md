@@ -31,6 +31,20 @@ The image and video UI resources are `ui://gemini-webapi-mcp/image-result-v2.htm
 
 ## Quick start
 
+### Use the hosted service (no server setup)
+
+The project also provides a hosted instance. You do not need to install Python,
+Docker, configure a server, or manage a registry key to use it. Add
+`https://gemini.proxmoxserver.dev/mcp` as a remote MCP server using Streamable
+HTTP, complete the MCP authorization flow, and then sign in to Google through
+the isolated browser handoff when prompted. MCP authorization and Google
+sign-in are separate first-use steps. Hosted availability and account access
+are subject to the operator's service and Google's policies; this documentation
+does not promise an uptime level or bypass Google entitlements. See
+[ChatGPT integration](docs/chatgpt-integration.md).
+
+### Self-host
+
 Requirements: Docker Compose v2, a persistent writable data volume, and a separately protected 32-byte registry key. The repository Compose example includes a host-specific seccomp path and HTTPS URLs; review and change those values for your deployment before starting it.
 
 ```bash

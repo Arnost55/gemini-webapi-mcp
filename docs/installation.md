@@ -1,6 +1,12 @@
 # Installation
 
-The supported deployment focus is Docker Compose. The repository Compose file
+No installation is required when using the project-hosted service: configure
+your remote MCP client with `https://gemini.proxmoxserver.dev/mcp`, authorize
+the MCP connection, and complete the separate Google browser sign-in the first
+time. You do not manage its server or encryption key. Availability is operated
+by the service owner and is not guaranteed by this project documentation.
+
+For users who want to run their own instance, the supported deployment focus is Docker Compose. The repository Compose file
 is an example, not a universal production configuration: review its proxy URLs,
 seccomp profile path, ports, and secrets before starting it. For the complete
 Docker and Proxmox LXC notes, see [install.md](install.md).

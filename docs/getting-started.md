@@ -4,6 +4,22 @@ Gemini WebAPI MCP connects MCP clients to Gemini Web using isolated browser
 sessions. It is not an official Google API client, and upstream web protocol
 changes can affect operation.
 
+## Hosted service (no server setup)
+
+The project also provides a hosted MCP endpoint at
+`https://gemini.proxmoxserver.dev/mcp` using Streamable HTTP. For this option,
+you do not need to install the package, run Docker, provision a server, or
+manage an encryption key. Add the endpoint to your remote MCP client, complete
+the MCP OAuth authorization, and then complete Google sign-in in the isolated
+browser handoff. Those authorization steps are still required; “no setup” means
+no user-managed server deployment. Hosted availability is managed by the
+operator and is not an uptime guarantee.
+
+This hosted option is distinct from self-hosting. If you prefer to operate the
+server and its storage yourself, continue with [installation](installation.md).
+
+## Self-hosted setup
+
 1. Follow [installation](installation.md) and protect the registry key and
    persistent `gemini-state` volume.
 2. Configure a public HTTPS origin in `GEMINI_PUBLIC_URL` if using remote
