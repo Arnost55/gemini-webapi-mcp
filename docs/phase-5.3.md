@@ -1,0 +1,98 @@
+# Phase 5.3: Gemini Studio capability report
+
+This release improves image presentation and adds reusable, private video
+presentation infrastructure. It does **not** claim an authenticated video
+generation or consumer NotebookLM protocol that was not verified.
+
+## Capability matrix
+
+| Area | State | Evidence boundary |
+| --- | --- | --- |
+| Gemini image generation | Supported | Existing account-scoped Gemini adapter |
+| Responsive image gallery | Supported | MCP App v2, with the v1 URI retained for cached descriptors |
+| Gemini video in the browser | Observed | Existing authenticated result played as a 1280 x 720, ~10 s video |
+| Gemini video generation through MCP | Unsupported | The generation RPC, job identifier, state transitions, expiry, and cancellation protocol were not recovered |
+| Private video validation and MCP presentation | Implemented infrastructure | MP4/WebM validation, bounded account-private reads, embedded-resource delivery, and an HTML5 player |
+| Video playback in ChatGPT | Unverified | No genuine MCP-generated video job was available for a client end-to-end test |
+| Consumer NotebookLM browser access | Observed | The independently authenticated NotebookLM site loaded for the test account |
+| Consumer NotebookLM MCP operations | Unsupported | No official consumer API or verified private account-scoped protocol was found |
+| NotebookLM Enterprise API | Documented, not configured | Requires a separately licensed Google Cloud project and IAM authorization |
+
+The read-only `gemini_video_capabilities` and `notebooklm_capabilities` tools
+return these states to clients without leaking account data.
+
+## Image MCP App
+
+`ui://gemini-webapi-mcp/image-result-v2.html` preserves each artifact's natural
+dimensions, uses `object-fit: contain`, and adapts to portrait, landscape, and
+square results. It includes a multi-image carousel, image count, keyboard
+navigation, download, zoom, and an expanded/fullscreen mode. Regenerate and
+edit call the real `gemini_generate_image` tool and preserve the conversation
+identifier for edits. The old v1 resource URI serves the corrected renderer so
+existing ChatGPT conversations remain compatible.
+
+The app reports bounded intrinsic-height changes after media load, viewport and
+orientation changes, selection changes, and expanded-mode changes. A
+`ResizeObserver` is disconnected on page exit, and animation-frame coalescing
+prevents resize loops.
+
+## MCP App metadata and hosting
+
+The image and video resources declare empty `connectDomains` and
+`resourceDomains`: all media is supplied in the private tool result, so the
+widgets need no network access. The legacy ChatGPT CSP keys are emitted beside
+the standards-first `_meta.ui.csp` representation.
+
+Set `GEMINI_WIDGET_DOMAIN` only when the widget is hosted on a dedicated HTTPS
+origin. Values using HTTP or containing a path are ignored. DNS, TLS, and the
+deployment origin must already exist; the server does not provision them.
+
+## Private video presentation
+
+Validated videos can be converted to MCP embedded resources with
+`MediaArtifact.as_video_resource(account_id)`. Delivery:
+
+- checks account ownership, completion, and expiry;
+- rechecks the stored size before reading;
+- enforces `GEMINI_MAX_VIDEO_ARTIFACT_BYTES` and the smaller
+  `GEMINI_MAX_EMBEDDED_VIDEO_BYTES` limit (50 MiB by default);
+- emits a private `gemini-artifact://` identifier, never a server path or
+  public URL;
+- supports MP4 and WebM containers in the HTML5 video player.
+
+The player creates a temporary browser object URL, exposes native playback,
+seek, volume, and download controls, supports host fullscreen, and revokes the
+object URL on exit. This transport is deliberately not connected to a fake
+generation tool while the upstream job protocol remains unknown.
+
+## NotebookLM boundary
+
+NotebookLM authentication and protocol state are independent from the Gemini
+chat adapter. Gemini cookies, account identifiers, serializers, and model
+selectors are not reused. No notebook list/create/upload/chat tools are
+registered because doing so without a verified consumer API would create
+decorative or misleading operations. Enterprise API support can be added as a
+separate adapter after a licensed Google Cloud project, required APIs, and IAM
+identity are explicitly configured.
+
+## Deployment
+
+This change does not require destructive storage migration. To deploy after
+normal review:
+
+1. Back up and verify the existing `gemini-state` volume and encryption key.
+2. Build the image from the committed source.
+3. Stop and replace only the application container while retaining the same
+   volume and environment.
+4. Reconnect or refresh the MCP integration so it discovers the v2 image
+   resource and the new read-only capability tools.
+5. Verify an existing account and image generation before broader use.
+
+No production deployment was performed as part of Phase 5.3.
+
+## Rollback
+
+Redeploy commit `630da1e2725e0b0a79702269bad9fb888a1a5fc8` with the existing volume
+and encryption key unchanged. The release does not delete or transform account
+registrations, conversations, artifacts, browser profiles, or keys. Do not
+remove the volume as part of rollback.

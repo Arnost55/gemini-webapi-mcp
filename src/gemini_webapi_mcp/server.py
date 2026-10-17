@@ -33,8 +33,16 @@ from urllib.parse import parse_qsl, urlencode, quote, urlsplit, urlunsplit
 from mcp.server.fastmcp import FastMCP, Context
 from mcp.types import CallToolResult, TextContent
 from .build_info import build_provenance
-from .image_viewer import IMAGE_VIEWER_HTML, IMAGE_VIEWER_URI
+from .image_viewer import (
+    IMAGE_VIEWER_HTML,
+    IMAGE_VIEWER_URI,
+    LEGACY_IMAGE_VIEWER_HTML,
+    LEGACY_IMAGE_VIEWER_URI,
+    image_viewer_resource_meta,
+)
 from .media import MediaType, create_media_artifact
+from .studio_capabilities import gemini_video_capabilities, notebooklm_capabilities
+from .video_viewer import VIDEO_VIEWER_HTML, VIDEO_VIEWER_URI, video_viewer_resource_meta
 from .observability import image_delivery_event, new_correlation_id
 from .models import (
     MODEL_ROUTE_HEADER,
@@ -804,11 +812,37 @@ mcp = FastMCP("gemini-webapi-mcp", lifespan=app_lifespan)
     title="Gemini image result",
     description="Private MCP App viewer for native image tool results.",
     mime_type="text/html;profile=mcp-app",
-    meta={"ui": {"prefersBorder": True}},
+    meta=image_viewer_resource_meta(),
 )
 def gemini_image_result_viewer() -> str:
     """Return a static viewer; image bytes arrive only in the tool result."""
     return IMAGE_VIEWER_HTML
+
+
+@mcp.resource(
+    LEGACY_IMAGE_VIEWER_URI,
+    name="gemini-image-result-viewer-v1",
+    title="Gemini image result (compatibility)",
+    description="Backward-compatible URI for cached Gemini image tool descriptors.",
+    mime_type="text/html;profile=mcp-app",
+    meta=image_viewer_resource_meta(),
+)
+def gemini_image_result_viewer_v1() -> str:
+    """Serve the corrected renderer at the legacy resource URI."""
+    return LEGACY_IMAGE_VIEWER_HTML
+
+
+@mcp.resource(
+    VIDEO_VIEWER_URI,
+    name="gemini-video-result-viewer",
+    title="Gemini video result",
+    description="Private MCP App player for validated embedded video results.",
+    mime_type="text/html;profile=mcp-app",
+    meta=video_viewer_resource_meta(),
+)
+def gemini_video_result_viewer() -> str:
+    """Return a static player; private video bytes arrive in the tool result."""
+    return VIDEO_VIEWER_HTML
 
 
 def _app_version() -> str:
@@ -1378,6 +1412,24 @@ async def gemini_server_info() -> dict:
         "conversation_schema_version": schema_version,
         "upstream": inspect_upstream().public(),
     }
+
+
+@mcp.tool(
+    name="gemini_video_capabilities",
+    annotations={"title": "Gemini Video Capabilities", "readOnlyHint": True},
+)
+async def gemini_video_capability_report() -> dict:
+    """Report browser observations separately from MCP-callable support."""
+    return gemini_video_capabilities()
+
+
+@mcp.tool(
+    name="notebooklm_capabilities",
+    annotations={"title": "NotebookLM Capabilities", "readOnlyHint": True},
+)
+async def notebooklm_capability_report() -> dict:
+    """Report verified consumer and enterprise NotebookLM boundaries."""
+    return notebooklm_capabilities()
 
 
 @mcp.tool(name="gemini_select_account", annotations={"title": "Select Gemini Account"})
@@ -2328,6 +2380,7 @@ async def gemini_switch_model(session_id: str, model: str, ctx: Context,
     meta={
         "ui": {"resourceUri": IMAGE_VIEWER_URI},
         "openai/outputTemplate": IMAGE_VIEWER_URI,
+        "openai/ui": {"availableDisplayModes": ["inline", "fullscreen"]},
     },
 )
 async def gemini_generate_image(
@@ -2610,6 +2663,7 @@ async def gemini_generate_image(
             content=content,
             structuredContent={
                 "text": visible_text,
+                "prompt": prompt,
                 "artifacts": [artifact.public_metadata() for artifact in artifacts],
                 "conversation_id": conv_id,
                 "correlation_id": correlation_id,

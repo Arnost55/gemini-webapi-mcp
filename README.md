@@ -23,6 +23,9 @@
 ## Features
 
 - **Image generation** from text descriptions (Nano Banana 2 with aspect ratio support)
+- **Responsive MCP image gallery** with natural aspect ratios, mobile sizing, fullscreen, zoom, and real regenerate/edit actions
+- **Private video presentation foundation** with account-scoped MP4/WebM validation and an MCP App HTML5 player
+- **Explicit Studio capability discovery** for Gemini video and NotebookLM without advertising unverified private protocols
 - **2x resolution** — automatically downloads upscaled version (2048x2048 → 2816x1536 and above)
 - **Image editing** — send an image + prompt to get a modified version
 - **File analysis** — video, images, PDF, documents
@@ -86,6 +89,9 @@ browser, account, and gateway installation instructions. See
 multi-account isolation, scopes, and rate limits.
 See [`docs/recovery-runbook.md`](docs/recovery-runbook.md) for the confirmed
 black-screen failure path, health checks, and safe rollback procedure.
+See [`docs/phase-5.3.md`](docs/phase-5.3.md) for the Gemini Studio capability
+matrix, image/video MCP App details, verified NotebookLM boundary, deployment,
+and rollback instructions.
 
 The browser handoff is served by the built-in OAuth authorization page when
 `GEMINI_PUBLIC_URL` and `GEMINI_NOVNC_WS_URL` are set. The link opens the

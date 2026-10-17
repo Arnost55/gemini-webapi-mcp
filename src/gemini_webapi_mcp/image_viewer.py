@@ -1,76 +1,47 @@
-"""Private MCP App resource for rendering image-tool results in ChatGPT."""
+"""Private MCP App resources for rendering image-tool results in ChatGPT."""
 
-IMAGE_VIEWER_URI = "ui://gemini-webapi-mcp/image-result-v1.html"
+from __future__ import annotations
+
+import os
+from urllib.parse import urlparse
+
+LEGACY_IMAGE_VIEWER_URI = "ui://gemini-webapi-mcp/image-result-v1.html"
+IMAGE_VIEWER_URI = "ui://gemini-webapi-mcp/image-result-v2.html"
+
+
+def image_viewer_resource_meta() -> dict:
+    """Return standards-first, least-privilege widget metadata."""
+    csp = {"connectDomains": [], "resourceDomains": []}
+    meta: dict = {
+        "ui": {"prefersBorder": False, "csp": csp},
+        "openai/widgetCSP": {"connect_domains": [], "resource_domains": []},
+        "openai/ui": {"availableDisplayModes": ["inline", "fullscreen"]},
+    }
+    domain = os.environ.get("GEMINI_WIDGET_DOMAIN", "").rstrip("/")
+    parsed = urlparse(domain)
+    if domain and parsed.scheme == "https" and parsed.netloc and not parsed.path:
+        meta["ui"]["domain"] = domain
+        meta["openai/widgetDomain"] = domain
+    return meta
+
 
 IMAGE_VIEWER_HTML = r"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <style>
-    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-    body { margin: 0; padding: 12px; background: transparent; }
-    #status { margin: 0 0 10px; color: CanvasText; font-size: 14px; }
-    #gallery { display: grid; gap: 10px; }
-    img { display: block; width: 100%; max-height: 70vh; object-fit: contain;
-          border-radius: 10px; background: color-mix(in srgb, Canvas 92%, CanvasText); }
-  </style>
-</head>
-<body>
-  <p id="status">Waiting for the generated image result…</p>
-  <div id="gallery" aria-live="polite"></div>
-  <script>
-    (() => {
-      const status = document.getElementById("status");
-      const gallery = document.getElementById("gallery");
-      const allowedMime = /^(image\/(?:png|jpeg|webp|gif))$/i;
-      const allowedBase64 = /^[A-Za-z0-9+/]*={0,2}$/;
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<style>
+:root{color-scheme:light dark;font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--surface:color-mix(in srgb,Canvas 96%,CanvasText 4%);--strong:color-mix(in srgb,Canvas 90%,CanvasText 10%);--line:color-mix(in srgb,CanvasText 15%,transparent);--muted:color-mix(in srgb,CanvasText 65%,transparent);--focus:#0b6bcb}*{box-sizing:border-box}html,body{margin:0;min-width:0;background:transparent;color:CanvasText}body{padding:4px;overflow-x:hidden}button,a{font:inherit}button:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offset:2px}#app{position:relative;width:100%}#status{min-height:20px;margin:5px 4px 9px;color:var(--muted);font-size:13px}#stage{position:relative;display:grid;place-items:center;width:100%;min-height:180px;overflow:hidden;border:1px solid var(--line);border-radius:14px;background:var(--surface)}#stage.empty{min-height:clamp(180px,40vw,320px)}#image{display:block;width:100%;height:auto;max-width:100%;max-height:min(78vh,900px);object-fit:contain;cursor:zoom-in;user-select:none;-webkit-user-drag:none;transform-origin:center;transition:opacity 160ms ease,transform 140ms ease}#image[hidden],#error[hidden]{display:none}#stage.loading:after{content:"";position:absolute;inset:0;background:linear-gradient(105deg,transparent 25%,color-mix(in srgb,CanvasText 8%,transparent) 45%,transparent 65%);animation:shimmer 1.4s infinite}@keyframes shimmer{from{transform:translateX(-100%)}to{transform:translateX(100%)}}#error{padding:28px 18px;text-align:center;color:var(--muted);line-height:1.45}.controls{position:absolute;inset:10px 10px auto;z-index:2;display:flex;justify-content:space-between;gap:8px;pointer-events:none}.group{display:flex;gap:6px;pointer-events:auto}.icon-button,.action{min-width:40px;min-height:40px;border:1px solid color-mix(in srgb,white 22%,transparent);border-radius:999px;background:color-mix(in srgb,#111 76%,transparent);color:white;display:inline-grid;place-items:center;padding:0 12px;cursor:pointer;text-decoration:none;-webkit-tap-highlight-color:transparent;backdrop-filter:blur(12px)}.icon-button:hover{background:color-mix(in srgb,#111 90%,transparent)}.icon-button[hidden],.action[hidden]{display:none}#counter{min-width:54px;font-variant-numeric:tabular-nums}#galleryNav{display:flex;align-items:center;justify-content:center;gap:8px;padding:10px 4px 2px}#galleryNav[hidden],#actions[hidden]{display:none}#thumbs{display:flex;gap:7px;max-width:calc(100% - 104px);overflow-x:auto;scrollbar-width:none}#thumbs::-webkit-scrollbar{display:none}.thumb{width:44px;height:44px;flex:0 0 auto;padding:0;overflow:hidden;border:2px solid transparent;border-radius:9px;background:var(--strong);cursor:pointer}.thumb[aria-current="true"]{border-color:var(--focus)}.thumb img{display:block;width:100%;height:100%;object-fit:cover}#actions{display:flex;flex-wrap:wrap;gap:8px;padding:10px 4px 2px}#actions .action{position:static;min-height:36px;color:CanvasText;border-color:var(--line);background:var(--surface);backdrop-filter:none}#actions .action:hover{background:var(--strong)}#expanded{position:fixed;inset:0;z-index:20;display:grid;grid-template-rows:auto 1fr;background:Canvas;padding:max(10px,env(safe-area-inset-top)) max(10px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left))}#expanded[hidden]{display:none}#expandedBar{display:flex;justify-content:flex-end;gap:7px;padding-bottom:8px}#expandedImageWrap{min-height:0;overflow:auto;display:grid;place-items:center}#expandedImage{display:block;max-width:100%;max-height:100%;object-fit:contain;transform-origin:center}@media(max-width:480px){body{padding:2px}#stage{border-radius:12px}#image{max-height:76vh}.controls{inset:8px 8px auto}}@media(prefers-reduced-motion:reduce){*,*:after{animation:none!important;transition:none!important}}
+</style></head><body>
+<main id="app" aria-busy="true"><p id="status">Waiting for the generated image result…</p>
+<section id="stage" class="empty loading" aria-label="Generated image"><img id="image" alt="Image generated by Gemini" hidden><div id="error" role="status" hidden></div><div class="controls"><div class="group"><button id="counter" class="icon-button" type="button" hidden aria-label="Image count"></button></div><div class="group"><a id="download" class="icon-button" download="gemini-image" hidden aria-label="Download image" title="Download">↓</a><button id="expand" class="icon-button" type="button" hidden aria-label="Expand image" title="Expand">⛶</button></div></div></section>
+<nav id="galleryNav" aria-label="Image gallery" hidden><button id="previous" class="icon-button" type="button" aria-label="Previous image">‹</button><div id="thumbs"></div><button id="next" class="icon-button" type="button" aria-label="Next image">›</button></nav>
+<div id="actions" hidden><button id="regenerate" class="action" type="button">Regenerate</button><button id="edit" class="action" type="button">Edit image</button></div></main>
+<section id="expanded" hidden aria-modal="true" role="dialog" aria-label="Expanded generated image"><div id="expandedBar"><button id="zoomOut" class="icon-button" type="button" aria-label="Zoom out">−</button><button id="zoomReset" class="icon-button" type="button" aria-label="Reset zoom">100%</button><button id="zoomIn" class="icon-button" type="button" aria-label="Zoom in">+</button><button id="close" class="icon-button" type="button" aria-label="Close expanded image">×</button></div><div id="expandedImageWrap"><img id="expandedImage" alt="Expanded image generated by Gemini"></div></section>
+<script>(()=>{const $=id=>document.getElementById(id),app=$("app"),status=$("status"),stage=$("stage"),image=$("image"),error=$("error"),galleryNav=$("galleryNav"),thumbs=$("thumbs"),counter=$("counter"),download=$("download"),expand=$("expand"),actions=$("actions"),expanded=$("expanded"),expandedImage=$("expandedImage"),zoomReset=$("zoomReset"),allowedMime=/^(image\/(?:png|jpeg|webp|gif))$/i,allowedBase64=/^[A-Za-z0-9+/]*={0,2}$/;let items=[],selected=0,metadata={},lastHeight=0,resizeFrame=0,scale=1;
+function envelope(v){return!v||typeof v!=="object"?null:v.mcp_tool_result||v.mcpToolResult||v.call_tool_result||v.callToolResult||v.result||v}function scheduleHeight(){if(resizeFrame)return;resizeFrame=requestAnimationFrame(()=>{resizeFrame=0;const h=Math.max(120,Math.min(2400,Math.ceil(document.documentElement.scrollHeight)));if(Math.abs(h-lastHeight)<2)return;lastHeight=h;if(window.openai&&typeof window.openai.notifyIntrinsicHeight==="function")try{window.openai.notifyIntrinsicHeight(h)}catch(_){}})}function dims(i){const a=Array.isArray(metadata.artifacts)?metadata.artifacts[i]:null,w=Number(a&&a.width),h=Number(a&&a.height);return w>0&&h>0?{w,h}:null}
+function select(i,focus=false){if(!items.length)return;selected=(i+items.length)%items.length;const item=items[selected],d=dims(selected);stage.classList.add("loading");error.hidden=true;image.hidden=false;image.src=item.url;image.alt=item.alt;image.style.aspectRatio=d?`${d.w} / ${d.h}`:"auto";if(d){image.width=d.w;image.height=d.h}else image.removeAttribute("width"),image.removeAttribute("height");download.href=item.url;download.download=metadata.artifacts&&metadata.artifacts[selected]&&metadata.artifacts[selected].filename||`gemini-image-${selected+1}`;counter.textContent=`${selected+1} / ${items.length}`;[...thumbs.children].forEach((n,j)=>n.setAttribute("aria-current",String(j===selected)));if(focus&&thumbs.children[selected])thumbs.children[selected].focus();scheduleHeight()}
+function render(v){const r=envelope(v);if(!r||!Array.isArray(r.content))return;metadata=r.structuredContent||r.structured_content||{};const blocks=r.content.filter(x=>x&&x.type==="image"&&typeof x.data==="string"&&allowedMime.test(x.mimeType||x.mime_type||"")&&allowedBase64.test(x.data));if(!blocks.length){app.setAttribute("aria-busy","false");stage.classList.remove("loading");stage.classList.add("empty");error.hidden=false;image.hidden=true;expand.hidden=download.hidden=true;error.textContent=r.isError?"Image generation failed. Try again or adjust the prompt.":"The result completed without a viewable image.";status.textContent=r.isError?"Image generation failed":"No image available";scheduleHeight();return}items=blocks.map((x,i)=>({url:`data:${x.mimeType||x.mime_type};base64,${x.data}`,alt:blocks.length===1?"Image generated by Gemini":`Image ${i+1} of ${blocks.length} generated by Gemini`}));thumbs.replaceChildren();items.forEach((item,i)=>{const b=document.createElement("button");b.className="thumb";b.type="button";b.setAttribute("aria-label",`Show image ${i+1}`);b.onclick=()=>select(i);const im=document.createElement("img");im.src=item.url;im.alt="";b.appendChild(im);thumbs.appendChild(b)});app.setAttribute("aria-busy","false");stage.classList.remove("empty");status.textContent=items.length===1?"Generated image":`${items.length} generated images`;counter.hidden=galleryNav.hidden=items.length<2;expand.hidden=download.hidden=false;const canRepeat=typeof metadata.prompt==="string"&&metadata.prompt.trim();actions.hidden=!canRepeat;$("regenerate").hidden=$("edit").hidden=!canRepeat;select(0);scheduleHeight()}
+function setZoom(v){scale=Math.max(.5,Math.min(4,v));expandedImage.style.transform=`scale(${scale})`;zoomReset.textContent=`${Math.round(scale*100)}%`}async function callTool(prompt,cid){if(!prompt||!window.openai||typeof window.openai.callTool!=="function")return;const args={prompt};if(cid)args.conversation_id=cid;try{status.textContent="Starting image generation…";await window.openai.callTool("gemini_generate_image",args)}catch(_){status.textContent="Could not start image generation from this client."}scheduleHeight()}async function openExpanded(){expandedImage.src=items[selected].url;setZoom(1);if(window.openai&&typeof window.openai.requestDisplayMode==="function")try{await window.openai.requestDisplayMode({mode:"fullscreen"})}catch(_){}expanded.hidden=false;document.body.style.overflow="hidden";$("close").focus();scheduleHeight()}async function closeExpanded(){expanded.hidden=true;document.body.style.overflow="";setZoom(1);if(window.openai&&typeof window.openai.requestDisplayMode==="function")try{await window.openai.requestDisplayMode({mode:"inline"})}catch(_){}expand.focus();scheduleHeight()}
+image.addEventListener("load",()=>{stage.classList.remove("loading");scheduleHeight()});image.addEventListener("error",()=>{stage.classList.remove("loading");image.hidden=true;error.hidden=false;error.textContent="This image could not be displayed.";scheduleHeight()});image.onclick=expand.onclick=openExpanded;$("close").onclick=closeExpanded;$("previous").onclick=()=>select(selected-1,true);$("next").onclick=()=>select(selected+1,true);$("zoomIn").onclick=()=>setZoom(scale+.25);$("zoomOut").onclick=()=>setZoom(scale-.25);zoomReset.onclick=()=>setZoom(1);$("regenerate").onclick=()=>callTool(metadata.prompt);$("edit").onclick=()=>{const p=window.prompt("How should Gemini edit this image?");if(p&&p.trim())callTool(p.trim(),metadata.conversation_id)};document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!expanded.hidden)closeExpanded();else if(e.key==="ArrowLeft"&&items.length>1)select(selected-1);else if(e.key==="ArrowRight"&&items.length>1)select(selected+1)});render(window.openai&&(window.openai.toolResponseMetadata||window.openai.toolOutput));window.addEventListener("openai:set_globals",e=>{const g=e.detail&&e.detail.globals;if(g)render(g.toolResponseMetadata||g.toolOutput)});window.addEventListener("message",e=>{if(e.data&&e.data.method==="ui/notifications/tool-result")render(e.data.params)});const observer=new ResizeObserver(scheduleHeight);observer.observe(app);window.addEventListener("resize",scheduleHeight,{passive:true});window.addEventListener("orientationchange",scheduleHeight,{passive:true});window.addEventListener("pagehide",()=>{observer.disconnect();cancelAnimationFrame(resizeFrame)},{once:true});scheduleHeight()})();</script></body></html>"""
 
-      function resultEnvelope(value) {
-        if (!value || typeof value !== "object") return null;
-        return value.mcp_tool_result || value.mcpToolResult ||
-          value.call_tool_result || value.callToolResult || value.result || value;
-      }
-
-      function render(value) {
-        const result = resultEnvelope(value);
-        if (!result || !Array.isArray(result.content)) return;
-        const images = result.content.filter((item) =>
-          item && item.type === "image" && typeof item.data === "string" &&
-          allowedMime.test(item.mimeType || item.mime_type || "") &&
-          allowedBase64.test(item.data)
-        );
-        if (!images.length) {
-          status.textContent = result.isError
-            ? "Image generation returned an error."
-            : "The result completed, but contained no viewable image block.";
-          return;
-        }
-        gallery.replaceChildren();
-        for (const item of images) {
-          const mime = item.mimeType || item.mime_type;
-          const image = document.createElement("img");
-          image.alt = "Image generated by Gemini";
-          image.loading = "eager";
-          image.src = `data:${mime};base64,${item.data}`;
-          gallery.appendChild(image);
-        }
-        status.textContent = images.length === 1
-          ? "Generated image"
-          : `${images.length} generated images`;
-      }
-
-      render(window.openai && window.openai.toolResponseMetadata);
-      window.addEventListener("openai:set_globals", (event) => {
-        const globals = event.detail && event.detail.globals;
-        if (globals && globals.toolResponseMetadata) render(globals.toolResponseMetadata);
-      });
-      window.addEventListener("message", (event) => {
-        const method = event.data && event.data.method;
-        if (method === "ui/notifications/tool-result") render(event.data.params);
-      });
-    })();
-  </script>
-</body>
-</html>
-"""
+# Keep the v1 resource alive for tool descriptors cached by existing chats.
+LEGACY_IMAGE_VIEWER_HTML = IMAGE_VIEWER_HTML

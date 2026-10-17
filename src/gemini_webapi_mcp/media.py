@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 
-from mcp.types import Annotations, ImageContent
+from mcp.types import Annotations, BlobResourceContents, EmbeddedResource, ImageContent
 from PIL import Image as PillowImage
 
 
@@ -113,6 +113,31 @@ class MediaArtifact:
             type="image",
             data=base64.b64encode(raw).decode("ascii"),
             mimeType=self.mime_type,
+            annotations=Annotations(audience=["user"], priority=1.0),
+            _meta={"artifact_id": self.artifact_id},
+        )
+
+    def as_video_resource(self, account_id: str) -> EmbeddedResource:
+        """Embed a validated video without exposing its private storage path."""
+        self.require_account(account_id)
+        if (
+            self.media_type is not MediaType.VIDEO
+            or self.status is not ArtifactStatus.COMPLETE
+            or self.is_expired()
+        ):
+            raise ValueError("artifact is not a complete video")
+        embed_limit = int(os.environ.get("GEMINI_MAX_EMBEDDED_VIDEO_BYTES", str(50 * 1024 * 1024)))
+        if self.size > embed_limit:
+            raise ValueError("video exceeds the configured embedded delivery limit")
+        raw = b"".join(self.iter_bytes(account_id))
+        return EmbeddedResource(
+            type="resource",
+            resource=BlobResourceContents(
+                uri=f"gemini-artifact://{self.artifact_id}/{self.filename}",
+                mimeType=self.mime_type,
+                blob=base64.b64encode(raw).decode("ascii"),
+                _meta={"artifact_id": self.artifact_id, "access_policy": self.access_policy.value},
+            ),
             annotations=Annotations(audience=["user"], priority=1.0),
             _meta={"artifact_id": self.artifact_id},
         )

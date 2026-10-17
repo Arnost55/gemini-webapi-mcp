@@ -99,3 +99,13 @@ def test_removes_only_exact_successfully_extracted_image_indices():
     assert 'image_generation_content/0' in result.text
     assert 'image_generation_content/1' not in result.text
     assert result.image_markers == 1
+
+
+def test_removes_resolved_googleusercontent_marker_with_subdomain_and_query():
+    text = (
+        'ready\n<Image alt="generated" '
+        'src="https://lh3.googleusercontent.com/image_generation_content/0?authuser=0#view"/>\n'
+    )
+    result = normalize_response_text(text, extracted_image_indices={0})
+    assert result.text.strip() == "ready"
+    assert result.image_markers == 1

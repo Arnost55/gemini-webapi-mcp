@@ -11,7 +11,9 @@ _PROTOCOL_LINE = re.compile(
     r"^[ \t]*(<(?:FollowUp|Image)\b[^\r\n]*?(?:/>|>[^<\r\n]*</(?:FollowUp|Image)>))[ \t]*$"
 )
 _IMAGE_PROTOCOL_SRC = re.compile(
-    r"^(?:https?://googleusercontent\.com/)?image_generation_content/(?P<index>\d+)$"
+    r"^(?:https?://(?:[a-z0-9-]+\.)*googleusercontent\.com/)?"
+    r"image_generation_content/(?P<index>\d+)(?:[?#][^\s<>]*)?$",
+    re.IGNORECASE,
 )
 _FENCE_LINE = re.compile(r"^[ \t]*(?P<fence>`{3,}|~{3,})")
 
