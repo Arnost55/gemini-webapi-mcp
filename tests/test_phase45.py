@@ -87,12 +87,17 @@ def test_rejection_includes_sanitized_protocol_stage():
 
 def test_server_info_reports_build_provenance(monkeypatch):
     monkeypatch.setenv("GEMINI_BUILD_COMMIT", "phase45-test")
+    monkeypatch.setenv("GEMINI_BUILD_TIMESTAMP", "2026-10-17T12:00:00Z")
+    monkeypatch.setenv("GEMINI_BUILD_VERSION", "0.2.0-test")
     info = asyncio.run(server.gemini_server_info())
     assert info["build_commit"] == "phase45-test"
     assert info["build_provenance"] == {
         "commit": "phase45-test",
+        "timestamp": "2026-10-17T12:00:00Z",
+        "version": "0.2.0-test",
         "source": "GEMINI_BUILD_COMMIT",
         "stream_serializer": "modern-v2-locale-bound",
+        "upstream_revision": "4402e5231760a1e85e28eb6cd0040ff302b764de",
     }
-    assert info["upstream"]["module_origin"].endswith("gemini_webapi/__init__.py")
+    assert info["upstream"]["module_origin"].replace("\\", "/").endswith("gemini_webapi/__init__.py")
 

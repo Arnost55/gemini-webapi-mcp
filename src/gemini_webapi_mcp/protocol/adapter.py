@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 from .contracts import GeminiRequest, GeminiResponse, ModelDescriptor
+from .normalization import normalize_response_text
 
 
 class GeminiProtocolAdapter(Protocol):
@@ -54,8 +55,12 @@ class LegacyClientAdapter:
         )
         metadata = getattr(response, "metadata", None)
         conversation = tuple((metadata or [None, None, None])[:3]) if metadata else None
+        normalized = normalize_response_text(getattr(response, "text", "") or "")
         return GeminiResponse(
-            text=getattr(response, "text", "") or "", conversation=conversation,
+            text=normalized.text,
+            follow_ups=tuple({"label": item.label, "query": item.query} for item in normalized.follow_ups),
+            reasoning_available=bool(getattr(response, "thoughts", None)),
+            conversation=conversation,
             images=tuple(getattr(response, "images", ()) or ()),
             protocol_revision=self.revision,
             duration_ms=int((time.monotonic() - started) * 1000),

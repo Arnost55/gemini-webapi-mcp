@@ -73,6 +73,8 @@ class GeminiResponse(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     text: str = ""
+    follow_ups: tuple[dict[str, str | None], ...] = ()
+    reasoning_available: bool = False
     conversation: tuple[str | None, str | None, str | None] | None = None
     images: tuple[Any, ...] = ()
     completed: bool = True

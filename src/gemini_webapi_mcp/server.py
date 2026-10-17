@@ -1324,16 +1324,21 @@ async def gemini_server_info() -> dict:
     from .upstream import inspect_upstream
 
     build_commit = os.environ.get("GEMINI_BUILD_COMMIT") or os.environ.get("GITHUB_SHA") or "unknown"
+    build_timestamp = os.environ.get("GEMINI_BUILD_TIMESTAMP") or "unknown"
+    build_version = os.environ.get("GEMINI_BUILD_VERSION") or _app_version()
     return {
         "application_version": _app_version(),
         "build_commit": build_commit,
         "build_provenance": {
             "commit": build_commit,
+            "timestamp": build_timestamp,
+            "version": build_version,
             "source": (
                 "GEMINI_BUILD_COMMIT" if os.environ.get("GEMINI_BUILD_COMMIT")
                 else "GITHUB_SHA" if os.environ.get("GITHUB_SHA") else "unavailable"
             ),
             "stream_serializer": _STREAM_SERIALIZER_VERSION,
+            "upstream_revision": "4402e5231760a1e85e28eb6cd0040ff302b764de",
         },
         "protocol": {
             "adapter": "legacy-client-quarantine",
@@ -1922,7 +1927,10 @@ def _response_text(response, *, operation: str) -> str:
     text = getattr(response, "text", None)
     if not isinstance(text, str) or not text.strip():
         raise _ResponseParseError(f"Gemini returned no text for {operation}")
-    normalized = " ".join(text.split()).lower()
+    from .protocol.normalization import normalize_response_text
+
+    public = normalize_response_text(text).text
+    normalized = " ".join(public.split()).lower()
     if any(marker in normalized for marker in _GENERIC_UPSTREAM_FAILURES):
         diagnostics = _request_diagnostics.get() or {}
         safe_keys = (
@@ -1935,7 +1943,7 @@ def _response_text(response, *, operation: str) -> str:
         )
         suffix = f" ({detail}, parser_stage=candidate_text)" if detail else ""
         raise _UpstreamRejectedError(f"Gemini rejected the {operation} request{suffix}")
-    return text
+    return public
 
 
 def _handle_error(e: Exception, *, operation: str | None = None) -> str:
@@ -2215,9 +2223,6 @@ async def gemini_chat(
                 raise
 
         text = _response_text(response, operation="chat")
-        thoughts = response.thoughts
-        if thoughts:
-            return f"**Thinking:**\n{thoughts}\n\n**Response:**\n{text}"
         return text
     except Exception as e:
         if "manager" in locals() and "client" in locals() and _upstream_failure_closes_client(e):

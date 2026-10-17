@@ -1,4 +1,5 @@
 import json
+import asyncio
 
 import pytest
 from pydantic import ValidationError
@@ -9,6 +10,8 @@ from gemini_webapi_mcp.protocol import (
 )
 from gemini_webapi_mcp.protocol.serializer import SerializationError
 from gemini_webapi_mcp.protocol.streaming import StreamTracker
+from gemini_webapi_mcp.protocol.adapter import LegacyClientAdapter
+from gemini_webapi_mcp.protocol.contracts import GeminiRequest
 from gemini_webapi_mcp.state_migration import copy_for_migration, inspect_state
 
 
@@ -62,6 +65,33 @@ def test_stream_tracker_requires_order_progress_and_completion():
     stream.assert_complete()
     with pytest.raises(ProtocolError, match="out-of-order"):
         stream.observe(1, progress=False, now=5)
+
+
+def test_typed_adapter_separates_reasoning_and_followups_from_public_text():
+    class Response:
+        text = 'Public answer.\n\n<FollowUp query="Next question"/>\n'
+        thoughts = "private reasoning must not escape"
+        metadata = ["cid", "rid", "rcid"]
+        images = []
+
+    class Native:
+        async def generate_content(self, *args, **kwargs):
+            return Response()
+
+    async def discover(_native):
+        return []
+
+    request = GeminiRequest(
+        operation=Operation.CHAT,
+        model="gemini-flash",
+        prompt="test",
+        request_id="request-1",
+    )
+    response = asyncio.run(LegacyClientAdapter(Native(), discover).execute(request))
+    assert response.text == "Public answer."
+    assert response.reasoning_available is True
+    assert response.follow_ups == ({"label": None, "query": "Next question"},)
+    assert "private reasoning" not in response.model_dump_json()
 
 
 def test_state_migration_is_copy_based_and_preflight_is_read_only(tmp_path):

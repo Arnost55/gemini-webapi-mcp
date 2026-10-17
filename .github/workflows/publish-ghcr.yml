@@ -40,6 +40,17 @@ jobs:
             type=ref,event=branch
             type=raw,value=latest,enable={{is_default_branch}}
 
+      - name: Resolve reproducible build provenance
+        id: provenance
+        shell: bash
+        run: |
+          echo "timestamp=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import tomllib
+          with open("pyproject.toml", "rb") as source:
+              print(f"version={tomllib.load(source)['project']['version']}")
+          PY
+
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
@@ -48,5 +59,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VCS_REF=${{ github.sha }}
+            BUILD_DATE=${{ steps.provenance.outputs.timestamp }}
+            APP_VERSION=${{ steps.provenance.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

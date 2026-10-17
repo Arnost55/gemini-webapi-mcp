@@ -576,6 +576,23 @@ cookies, OAuth tokens, browser identifiers, or file contents. MCP clients that
 cache `tools/list` must reconnect or explicitly refresh the server connection
 after upgrading the image.
 
+Release containers embed the Git commit, UTC build timestamp, application
+version, serializer revision, and pinned upstream revision. For an equivalent
+local image, pass the same provenance explicitly:
+
+```bash
+docker build \
+  --build-arg VCS_REF="$(git rev-parse HEAD)" \
+  --build-arg BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+  --build-arg APP_VERSION="0.2.0" \
+  -t gemini-webapi-mcp:local .
+```
+
+The container installs Playwright's Python driver but uses the packaged Google
+Chrome Stable channel. It intentionally does not download Playwright's second
+Chromium binary. See [Phase 5.1 browser evidence](docs/phase5.1-browser-evidence.md)
+for the sanitized capability observations and explicit verification limits.
+
 ## Acknowledgements
 
 This project is built on top of [gemini-webapi](https://github.com/HanaokaYuzu/Gemini-API) by [@HanaokaYuzu](https://github.com/HanaokaYuzu) (fork by [@xob0t](https://github.com/xob0t/Gemini-API) with curl_cffi support) — a reverse-engineered async Python wrapper for the Google Gemini web app. Licensed under AGPL-3.0.
