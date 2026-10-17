@@ -36,7 +36,7 @@ def test_preserves_ordinary_thinking_language_and_citations():
 def test_extracts_trailing_image_and_follow_up_protocol_without_exposing_markup():
     result = normalize_response_text(
         'Here is the requested image.\n\n'
-        '<Image src="internal-artifact"/>\n'
+        '<Image alt="generated" src="image_generation_content/0"/>\n'
         '<FollowUp query="Make it brighter"/>\n'
     )
     assert result.text == "Here is the requested image."
@@ -56,3 +56,10 @@ def test_preserves_literal_image_markup_when_not_a_separated_protocol_suffix():
     fenced = '```xml\n<Image src="sample"/>\n```\n'
     assert normalize_response_text(inline).text == inline
     assert normalize_response_text(fenced).text == fenced
+
+
+def test_preserves_unknown_image_reference_markup():
+    text = 'Answer.\n\n<Image src="user-authored/example"/>\n'
+    result = normalize_response_text(text)
+    assert result.text == text
+    assert result.image_markers == 0

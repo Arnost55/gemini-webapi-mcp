@@ -9,6 +9,9 @@ from xml.etree import ElementTree
 _PROTOCOL_LINE = re.compile(
     r"^[ \t]*(<(?:FollowUp|Image)\b[^\r\n]*?(?:/>|>[^<\r\n]*</(?:FollowUp|Image)>))[ \t]*$"
 )
+_IMAGE_PROTOCOL_SRC = re.compile(
+    r"^(?:https?://googleusercontent\.com/)?image_generation_content/\d+$"
+)
 
 
 @dataclass(frozen=True)
@@ -66,10 +69,14 @@ def normalize_response_text(text: str) -> NormalizedResponse:
                 query=element.attrib.get("query") or body or None,
             ))
         elif element.tag == "Image":
-            if (element.text or "").strip():
+            if (
+                (element.text or "").strip()
+                or set(element.attrib) - {"alt", "src"}
+                or not _IMAGE_PROTOCOL_SRC.fullmatch(element.attrib.get("src", ""))
+            ):
                 break
-            # The image itself is transported as MCP ImageContent. Attributes
-            # may change upstream and are intentionally not surfaced as text.
+            # Strip only known Gemini protocol references; preserve arbitrary
+            # XML-looking user content and unknown upstream markup.
             image_markers += 1
         else:
             break

@@ -192,6 +192,94 @@ def test_streamable_http_tools_list_exposes_hotfix_contract(monkeypatch, tmp_pat
     asyncio.run(exchange())
 
 
+@pytest.mark.parametrize("image_count", [1, 2])
+def test_streamable_http_tools_call_returns_native_image_blocks(tmp_path, image_count):
+    """Prove FastMCP serializes native image blocks into the HTTP MCP result."""
+    import httpx
+    from mcp.server.fastmcp import FastMCP
+    from mcp.types import CallToolResult, ImageContent, TextContent
+    from PIL import Image
+    import uvicorn
+
+    images = []
+    for index in range(image_count):
+        image_path = tmp_path / f"generated-{index}.png"
+        Image.new("RGB", (13 + index, 7), (index, 30, 200)).save(image_path, format="PNG")
+        images.append(ImageContent(
+            type="image",
+            mimeType="image/png",
+            data=base64.b64encode(image_path.read_bytes()).decode("ascii"),
+        ))
+    native_result = CallToolResult(
+        content=[TextContent(type="text", text="Generated image."), *images],
+        structuredContent={
+            "artifacts": [{"artifact_id": f"artifact-{i}", "mime_type": "image/png"} for i in range(image_count)],
+            "conversation_id": ["cid", "rid", "rcid"],
+        },
+    )
+
+    wire_server = FastMCP("gemini-image-wire-test")
+
+    @wire_server.tool(name="gemini_generate_image", structured_output=False)
+    async def fake_generate_image(prompt: str):
+        return native_result
+
+    async def exchange():
+        app = wire_server.streamable_http_app()
+        server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="critical"))
+        server_task = asyncio.create_task(server.serve())
+        try:
+            for _ in range(100):
+                if server.started:
+                    break
+                await asyncio.sleep(0.02)
+            assert server.started
+            port = server.servers[0].sockets[0].getsockname()[1]
+            async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+                headers = {
+                    "accept": "application/json, text/event-stream",
+                    "content-type": "application/json",
+                }
+                initialized = await client.post("/mcp", headers=headers, json={
+                    "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-03-26", "capabilities": {},
+                        "clientInfo": {"name": "image-wire-test", "version": "1"},
+                    },
+                })
+                assert initialized.status_code == 200
+                headers["mcp-session-id"] = initialized.headers["mcp-session-id"]
+                await client.post("/mcp", headers=headers, json={
+                    "jsonrpc": "2.0", "method": "notifications/initialized", "params": {},
+                })
+                response = await client.post("/mcp", headers=headers, json={
+                    "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                    "params": {"name": "gemini_generate_image", "arguments": {"prompt": "test"}},
+                })
+                assert response.status_code == 200
+                event = next(line[6:] for line in response.text.splitlines() if line.startswith("data: "))
+                result = json.loads(event)["result"]
+                assert isinstance(result["content"], list)
+                blocks = [item for item in result["content"] if item["type"] == "image"]
+                assert len(blocks) == image_count
+                assert [item["mimeType"] for item in blocks] == ["image/png"] * image_count
+                for block, original in zip(blocks, images):
+                    decoded = base64.b64decode(block["data"], validate=True)
+                    assert decoded == base64.b64decode(original.data, validate=True)
+                    with Image.open(io.BytesIO(decoded)) as image:
+                        image.verify()
+                assert result["content"][0] == {"type": "text", "text": "Generated image."}
+                assert result["structuredContent"]["artifacts"] == native_result.structuredContent["artifacts"]
+                assert result["structuredContent"]["conversation_id"] == ["cid", "rid", "rcid"]
+                assert "content_items" not in result
+                assert sum(item["type"] == "image" for item in result["content"]) == image_count
+        finally:
+            server.should_exit = True
+            await server_task
+
+    asyncio.run(exchange())
+
+
 def test_fallback_models_are_explicitly_low_confidence(monkeypatch):
     monkeypatch.delenv("GEMINI_MODELS", raising=False)
     models = capabilities_json()

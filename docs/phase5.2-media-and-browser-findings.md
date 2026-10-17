@@ -18,6 +18,16 @@ not contain storage paths or base64 text. Actual ChatGPT presentation still
 requires testing through a connector running this revision; production was not
 deployed during this phase.
 
+OpenAI's current connector guidance describes MCP tool results as model input
+and documents MCP Apps as the supported route for a custom inline interface.
+It does not promise that a custom MCP connector automatically renders an
+arbitrary `ImageContent` tool-result block as a native conversation image.
+Therefore a valid image block is a server/protocol guarantee, not proof of
+ChatGPT's presentation behavior. If raw image blocks are not surfaced, an MCP
+App resource associated with the tool can render an authorized result inline.
+That would be an inline app surface; it does not guarantee the exact native
+attachment presentation of ChatGPT's built-in image generator.
+
 ## Authenticated Gemini browser observations
 
 - Flash-Lite, Flash, and Pro were visible model choices.
