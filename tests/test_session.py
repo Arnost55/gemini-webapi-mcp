@@ -242,14 +242,35 @@ def test_direct_browser_cookie_check_uses_nonblocking_basic_reader(monkeypatch, 
 
     def read_basic(path):
         calls.append(path)
-        return [(".google.com", "__Secure-1PSID", "redacted")]
+        return [
+            (".google.com", "__Secure-1PSID", "redacted"),
+            (".google.com", "__Secure-1PSIDTS", "also-redacted"),
+        ]
 
     monkeypatch.delenv("GEMINI_ACCOUNT_COOKIE_READER", raising=False)
     monkeypatch.setattr(server, "_read_basic_chromium_cookies", read_basic)
     status = manager._check_direct_browser()
     assert status.state == "ready"
     assert status.has_psid is True
+    assert status.has_psidts is True
     assert calls == [tmp_path / "Default" / "Cookies"]
+
+
+def test_direct_browser_requires_both_gemini_session_cookies(monkeypatch, tmp_path):
+    from gemini_webapi_mcp import server
+
+    manager = _direct_manager(monkeypatch, tmp_path)
+    manager._browser_process = FakeDirectProcess()
+    monkeypatch.delenv("GEMINI_ACCOUNT_COOKIE_READER", raising=False)
+    monkeypatch.setattr(
+        server, "_read_basic_chromium_cookies",
+        lambda path: [(".google.com", "__Secure-1PSID", "redacted")],
+    )
+
+    status = manager._check_direct_browser()
+    assert status.state == "login_required"
+    assert status.has_psid is True
+    assert status.has_psidts is False
 
 
 def test_oauth_subject_resolves_only_to_its_isolated_profile(tmp_path):

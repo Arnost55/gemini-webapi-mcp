@@ -568,7 +568,7 @@ class _AccountClientManager:
         return subject, record
 
     @staticmethod
-    def _cookies(profile: Path) -> tuple[str, str | None]:
+    def _cookie_values(profile: Path) -> tuple[str | None, str | None]:
         cookie_file = profile / "Default" / "Cookies"
         local_state = profile / "Local State"
         if not profile.is_dir():
@@ -610,8 +610,18 @@ class _AccountClientManager:
                 psid = value
             elif name == "__Secure-1PSIDTS" and value:
                 psidts = value
-        if not psid:
-            raise RuntimeError("selected Gemini account is not logged in")
+        return psid, psidts
+
+    @staticmethod
+    def _cookies(profile: Path) -> tuple[str, str]:
+        psid, psidts = _AccountClientManager._cookie_values(profile)
+        if not psid or not psidts:
+            missing = []
+            if not psid:
+                missing.append("__Secure-1PSID")
+            if not psidts:
+                missing.append("__Secure-1PSIDTS")
+            raise RuntimeError("required Gemini session cookie(s) missing: " + ", ".join(missing))
         return psid, psidts
 
     async def _build_client(self, key: tuple[str, str], profile: Path):
@@ -962,6 +972,10 @@ def _consume_browser_handoff(token: str, subject: str, account: str) -> None:
     except ValueError as exc:
         raise PermissionError("invalid Gemini account profile name") from exc
     registry = DynamicAccountRegistry(registry_path, registry_key)
+    previous = next(
+        (item for item in registry.list_safe(subject) if item["account"] == account),
+        None,
+    )
     registry.register(
         subject=subject,
         account=account,
@@ -971,13 +985,13 @@ def _consume_browser_handoff(token: str, subject: str, account: str) -> None:
         state="pending",
     )
     try:
-        _handoff_broker.consume(token, promote_to=destination)
+        _handoff_broker.consume(token, promote_to=destination, replace_existing=True)
         registry.set_state(account, "ready")
     except Exception:
         try:
-            registry.set_state(account, "revoked")
+            registry.set_state(account, previous["state"] if previous else "revoked")
         except Exception:
-            logger.warning("failed to revoke incomplete Gemini account registration", exc_info=True)
+            logger.warning("failed to restore Gemini account registration state", exc_info=True)
         raise
 
 
@@ -1233,12 +1247,16 @@ async def gemini_account_diagnostics(ctx: Context, account_id: Optional[str] = N
             except OSError:
                 pass
         credentials_available = False
+        has_psid = False
+        has_psidts = False
         identity_fingerprint = None
         credential_error = None
         if profile_exists:
             try:
-                psid, _ = manager._cookies(profile)
-                credentials_available = bool(psid)
+                psid, psidts = manager._cookie_values(profile)
+                has_psid = bool(psid)
+                has_psidts = bool(psidts)
+                credentials_available = has_psid and has_psidts
                 if psid:
                     identity_fingerprint = hashlib.sha256(psid.encode("utf-8")).hexdigest()[:16]
             except Exception as exc:
@@ -1254,6 +1272,8 @@ async def gemini_account_diagnostics(ctx: Context, account_id: Optional[str] = N
             "last_local_conversation_activity": manager.conversations.last_activity_for_account(subject, account),
             "profile_exists": profile_exists,
             "credentials_available": credentials_available,
+            "has_psid": has_psid,
+            "has_psidts": has_psidts,
             "authentication_verified": "not_tested",
             "google_identity_fingerprint": identity_fingerprint,
             "credential_error_category": credential_error,

@@ -101,7 +101,7 @@ def test_handoff_promotes_into_selected_account_profile(monkeypatch, tmp_path):
     class Broker:
         destination = None
 
-        def consume(self, token, promote_to):
+        def consume(self, token, promote_to, **kwargs):
             self.destination = promote_to
 
     broker = Broker()

@@ -296,9 +296,9 @@ class LocalOAuth:
 body{margin:0;background:#0b1020;color:#eef2ff;font:16px system-ui,sans-serif}.card{max-width:560px;margin:10vh auto;padding:32px;border:1px solid #2b3655;border-radius:18px;background:#121a2d;box-shadow:0 20px 60px #0006}h1{margin-top:0;font-size:28px}p{color:#b8c2dc;line-height:1.5}.steps{margin:24px 0;padding:0;list-style:none}.steps li{padding:12px 0;border-bottom:1px solid #26304a}.button{display:inline-block;padding:12px 16px;border-radius:10px;background:#8ab4ff;color:#08101f;text-decoration:none;font-weight:700;margin:8px 8px 8px 0}.secondary{background:#273653;color:#eef2ff}.notice{margin-top:18px;padding:14px;border-radius:10px;background:#211d13;color:#f4d58a;line-height:1.45}code{font-family:ui-monospace,monospace}.small{font-size:13px;color:#8793b0}</style></head>
 <body><main class='card'><h1>Connect Gemini account</h1>
 <p>This authorizes the MCP connection. Gemini Web login is completed in the isolated Chromium profile on your server.</p>
-<ol class='steps'><li><b>1.</b> Open Chromium login.</li><li><b>2.</b> Sign in to the Google account you want to connect.</li><li><b>3.</b> Return here and continue.</li></ol>
-""" + browser_auto + browser_link + "<a class='button' href='" + html.escape(finish, quote=True) + "'>Continue after login</a>" + """
-<p class='small'>This page never displays or transmits your Google cookies. The authorization link expires after a short time and can be used once.</p></main></body></html>"""
+<ol class='steps'><li><b>1.</b> Open the isolated Chromium login.</li><li><b>2.</b> Sign in to the Google account you want to connect.</li><li><b>3.</b> Wait for both required Gemini session cookies to be detected. The server will continue automatically.</li></ol>
+""" + browser_auto + browser_link + "<a class='button' href='" + html.escape(finish, quote=True) + "'>Check login and continue</a>" + """
+<p class='small'>A visible Google page is not enough to confirm login. This service checks only whether the required session cookies are present; it never displays or transmits their values. The authorization link expires after a short time and can be used once.</p></main></body></html>"""
 
     def completion_redirect(self, code: str, state: str, subject: str | None = None) -> str:
         with self._lock:
@@ -308,7 +308,10 @@ body{margin:0;background:#0b1020;color:#eef2ff;font:16px system-ui,sans-serif}.c
             if item.state != state:
                 raise ValueError("OAuth state mismatch")
             if item.handoff_token and self._handoff_ready and not self._handoff_ready(item.handoff_token):
-                raise ValueError("Gemini login is not ready yet; finish the Chromium login and try again")
+                raise ValueError(
+                    "Gemini login is not ready: the isolated browser must contain both required "
+                    "Gemini session cookies. Finish sign-in in that browser and try again."
+                )
             self.complete(code, subject or item.subject)
             if item.handoff_token and self._handoff_consume:
                 self._handoff_consume(item.handoff_token, item.subject, item.account or ("gemini-" + item.code[:10]))

@@ -64,10 +64,15 @@ controls the bounded initialization wait and defaults to 10 seconds.
    rejection.
 
 The Gemini session supervisor performs its lightweight session check every five
-minutes by default. A valid server-side PSID is required before it publishes a
-ready state; if the session becomes invalid it records `login_required` and the
-next handoff must authenticate again. Reloading a page does not refresh an
-expired Google credential.
+minutes by default. It reports `ready` only when both `__Secure-1PSID` and
+`__Secure-1PSIDTS` are present in the isolated profile; diagnostics expose only
+their presence booleans, never their values. If either is missing, the account
+remains `login_required` and the login handoff must finish in the server's
+isolated Chromium profile. A local Chrome login does not update that profile,
+and reloading a page does not refresh an expired Google credential.
+When re-authenticating an existing registered account, the previous profile is
+preserved under `.reauth-backups/` beside the account profile; it is not
+automatically deleted.
 
 ## Sandbox and Google rejection are different
 

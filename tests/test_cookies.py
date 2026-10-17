@@ -53,3 +53,21 @@ def test_basic_chromium_cookie_reader_handles_v10(tmp_path):
     con.commit(); con.close()
 
     assert _read_basic_chromium_cookies(db) == [(".google.com", "__Secure-1PSID", "psid-test")]
+
+
+def test_account_client_requires_both_session_cookies(monkeypatch, tmp_path):
+    profile = tmp_path / "profile"
+    (profile / "Default").mkdir(parents=True)
+    (profile / "Default" / "Cookies").touch()
+    (profile / "Local State").touch()
+    monkeypatch.delenv("GEMINI_ACCOUNT_COOKIE_READER", raising=False)
+    monkeypatch.setattr(
+        S, "_read_basic_chromium_cookies",
+        lambda path: [(".google.com", "__Secure-1PSID", "secret-not-returned")],
+    )
+
+    psid, psidts = S._AccountClientManager._cookie_values(profile)
+    assert psid == "secret-not-returned"
+    assert psidts is None
+    with pytest.raises(RuntimeError, match="__Secure-1PSIDTS"):
+        S._AccountClientManager._cookies(profile)

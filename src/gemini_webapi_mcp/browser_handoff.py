@@ -320,12 +320,18 @@ class BrowserHandoffBroker:
                     names = {cookie.name for cookie in cookies if cookie.value}
                 has_psid = "__Secure-1PSID" in names
                 has_psidts = "__Secure-1PSIDTS" in names
-                if has_psid:
+                if has_psid and has_psidts:
                     state["state"] = "ready"
                     state["ready"] = True
                     state["has_psid"] = True
-                    state["has_psidts"] = has_psidts
+                    state["has_psidts"] = True
                     state.pop("error", None)
+                else:
+                    state["state"] = "login_required"
+                    state["ready"] = False
+                    state["has_psid"] = has_psid
+                    state["has_psidts"] = has_psidts
+                    state["error"] = "required_gemini_cookies_missing"
             except Exception:
                 # Chrome may briefly lock the cookie database while writing it.
                 # Preserve the previous safe state and let polling retry.
@@ -349,17 +355,10 @@ class BrowserHandoffBroker:
             state = self.status(token)
             if state["state"] in {"expired", "error", "stopped"}:
                 return state
-            state["state"] = "ready"
-            state["ready"] = True
-            state["manual_confirmation"] = True
-            temporary = Path(session.status_file).with_suffix(".tmp")
-            temporary.write_text(json.dumps({
-                "state": "ready",
-                "manual_confirmation": True,
-            }, separators=(",", ":")) + "\n", encoding="utf-8")
-            os.chmod(temporary, 0o600)
-            os.replace(temporary, session.status_file)
-            return state
+            # A button click is not authentication. Re-read the isolated
+            # profile and only let OAuth continue when both required cookies
+            # are present.
+            return self.verify(token)
 
     def browser_url(self, session: BrowserHandoff) -> str:
         if not self.public_url:
@@ -379,9 +378,14 @@ class BrowserHandoffBroker:
                 data = json.loads(Path(session.status_file).read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 return False
-            return data.get("state") == "ready" and all(
-                not hasattr(process, "poll") or process.poll() is None
-                for process in session.processes
+            return (
+                data.get("state") == "ready"
+                and data.get("has_psid") is True
+                and data.get("has_psidts") is True
+                and all(
+                    not hasattr(process, "poll") or process.poll() is None
+                    for process in session.processes
+                )
             )
 
     @staticmethod
@@ -417,7 +421,14 @@ class BrowserHandoffBroker:
                     data.setdefault("error", "browser_start_failed")
             result = {
                 "state": state,
-                "ready": state == "ready" and "exited" not in components.values(),
+                "ready": (
+                    state == "ready"
+                    and data.get("has_psid") is True
+                    and data.get("has_psidts") is True
+                    and "exited" not in components.values()
+                ),
+                "has_psid": bool(data.get("has_psid", False)),
+                "has_psidts": bool(data.get("has_psidts", False)),
                 "expires_at": session.expires_at,
                 "components": components,
             }
@@ -432,25 +443,47 @@ class BrowserHandoffBroker:
                 return None
             return session.owner_subject
 
-    def consume(self, token: str, promote_to: str | Path | None = None) -> None:
+    def consume(
+        self,
+        token: str,
+        promote_to: str | Path | None = None,
+        *,
+        replace_existing: bool = False,
+    ) -> None:
         with self._lock:
             destination = None
+            backup = None
             if promote_to is not None:
                 destination = Path(promote_to).expanduser().resolve()
-                if destination.exists():
+                if destination.exists() and not replace_existing:
                     raise FileExistsError("Gemini account profile already exists")
-            session = self._sessions.pop(token, None)
+                if destination.exists():
+                    backup_root = destination.parent / ".reauth-backups"
+                    backup_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    backup = backup_root / f"{destination.name}-{token}"
+                    if backup.exists():
+                        raise FileExistsError("Gemini account recovery backup already exists")
+            session = self._sessions.get(token)
             if session is None:
                 raise ValueError("unknown or expired browser handoff")
             if promote_to is None:
+                self._sessions.pop(token, None)
                 self._dispose(session)
             else:
                 assert destination is not None
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 for process in session.processes:
                     self._terminate(process)
+                try:
+                    if backup is not None:
+                        shutil.move(destination, backup)
+                    shutil.move(session.profile, destination)
+                except Exception:
+                    if backup is not None and backup.exists() and not destination.exists():
+                        shutil.move(backup, destination)
+                    raise
+                self._sessions.pop(token, None)
                 Path(session.status_file).unlink(missing_ok=True)
-                shutil.move(session.profile, destination)
                 self._manifest_path(token).unlink(missing_ok=True)
             self._write_tokens()
 

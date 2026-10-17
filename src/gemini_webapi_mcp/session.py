@@ -324,22 +324,22 @@ class GeminiSessionManager:
             state = await self._classify()
             cookies = await self._context.cookies("https://gemini.google.com")
             names = {cookie["name"] for cookie in cookies}
-            has_psid = any(name.endswith("PSID") for name in names)
+            has_psid = "__Secure-1PSID" in names
             # A Gemini URL alone is not proof of authentication. In
             # particular, Google can render its consent screen at /app and a
             # transient DOM read after a reload can contain no login text.
-            # Require the server-side session cookie before publishing ready.
-            if state != "error" and has_psid:
-                # Gemini may keep a generic sign-in label on an authenticated
-                # page. A server-side PSID is stronger evidence than that text.
+            has_psidts = "__Secure-1PSIDTS" in names
+            # The upstream client requires both cookies. A PSID by itself is
+            # not enough evidence to advertise a usable Gemini session.
+            if state != "error" and has_psid and has_psidts:
                 state = "ready"
-            elif state == "ready" and not has_psid:
+            elif state == "ready" and not (has_psid and has_psidts):
                 state = "login_required"
             now = datetime.now(timezone.utc).isoformat()
             self.status_info.state = state
             self.status_info.checked_at = now
             self.status_info.has_psid = has_psid
-            self.status_info.has_psidts = "__Secure-1PSIDTS" in names
+            self.status_info.has_psidts = has_psidts
             self.status_info.error = None
             if state == "ready":
                 self.status_info.last_valid_at = now
@@ -375,7 +375,7 @@ class GeminiSessionManager:
                 names = {cookie.name for cookie in cookies if cookie.value}
             has_psid = "__Secure-1PSID" in names
             has_psidts = "__Secure-1PSIDTS" in names
-            self.status_info.state = "ready" if has_psid else "login_required"
+            self.status_info.state = "ready" if has_psid and has_psidts else "login_required"
             self.status_info.has_psid = has_psid
             self.status_info.has_psidts = has_psidts
             self.status_info.error = None

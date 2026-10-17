@@ -2,6 +2,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from gemini_webapi_mcp.browser_handoff import BrowserHandoffBroker
 
 
@@ -69,8 +71,14 @@ def test_handoff_replaces_persisted_unsafe_fluxbox_config(tmp_path: Path):
 def test_handoff_ready_state_never_reads_cookie_values(tmp_path: Path):
     broker = BrowserHandoffBroker(tmp_path, runner=lambda *args, **kwargs: FakeProcess())
     session = broker.create()
-    Path(session.status_file).write_text(json.dumps({"state": "ready", "has_psid": True}), encoding="utf-8")
+    Path(session.status_file).write_text(json.dumps({
+        "state": "ready", "has_psid": True, "has_psidts": True,
+    }), encoding="utf-8")
     assert broker.is_ready(session.token) is True
+    Path(session.status_file).write_text(json.dumps({
+        "state": "ready", "has_psid": True, "has_psidts": False,
+    }), encoding="utf-8")
+    assert broker.is_ready(session.token) is False
     Path(session.status_file).write_text(json.dumps({"state": "login_required"}), encoding="utf-8")
     assert broker.is_ready(session.token) is False
 
@@ -83,7 +91,10 @@ def test_handoff_status_uses_basic_chromium_cookie_reader(monkeypatch, tmp_path:
 
     def read_basic(path):
         calls.append(path)
-        return [(".google.com", "__Secure-1PSID", "redacted")]
+        return [
+            (".google.com", "__Secure-1PSID", "redacted"),
+            (".google.com", "__Secure-1PSIDTS", "also-redacted"),
+        ]
 
     monkeypatch.setattr(server, "_read_basic_chromium_cookies", read_basic)
     broker = BrowserHandoffBroker(tmp_path, runner=lambda *args, **kwargs: FakeProcess())
@@ -93,7 +104,31 @@ def test_handoff_status_uses_basic_chromium_cookie_reader(monkeypatch, tmp_path:
 
     assert state["ready"] is True
     assert state["has_psid"] is True
+    assert state["has_psidts"] is True
     assert calls
+
+
+def test_handoff_rejects_psid_without_psidts_and_manual_confirmation_cannot_bypass(monkeypatch, tmp_path: Path):
+    from gemini_webapi_mcp import server
+
+    monkeypatch.delenv("GEMINI_ACCOUNT_COOKIE_READER", raising=False)
+    monkeypatch.setattr(
+        server, "_read_basic_chromium_cookies",
+        lambda path: [(".google.com", "__Secure-1PSID", "redacted")],
+    )
+    broker = BrowserHandoffBroker(tmp_path, runner=lambda *args, **kwargs: FakeProcess())
+    session = broker.create()
+
+    state = broker.verify(session.token)
+    assert state["state"] == "login_required"
+    assert state["ready"] is False
+    assert state["has_psid"] is True
+    assert state["has_psidts"] is False
+    assert broker.is_ready(session.token) is False
+
+    confirmed = broker.confirm_manual(session.token)
+    assert confirmed["state"] == "login_required"
+    assert confirmed["ready"] is False
 
 
 def test_handoff_reports_display_failure(tmp_path: Path):
@@ -154,6 +189,62 @@ def test_handoff_promotion_moves_only_the_completed_profile(tmp_path: Path):
     assert destination.is_dir()
     assert not Path(session.profile).exists()
     assert session.token not in (tmp_path / "novnc-tokens").read_text(encoding="utf-8")
+
+
+def test_handoff_reauthentication_preserves_existing_profile(tmp_path: Path):
+    broker = BrowserHandoffBroker(tmp_path, runner=lambda *args, **kwargs: FakeProcess())
+    session = broker.create()
+    destination = tmp_path / "accounts" / "owned-account"
+    destination.mkdir(parents=True)
+    (destination / "old-profile-marker").write_text("preserve", encoding="utf-8")
+    (Path(session.profile) / "new-profile-marker").write_text("new", encoding="utf-8")
+
+    broker.consume(session.token, promote_to=destination, replace_existing=True)
+
+    assert (destination / "new-profile-marker").read_text(encoding="utf-8") == "new"
+    backups = list((destination.parent / ".reauth-backups").iterdir())
+    assert len(backups) == 1
+    assert (backups[0] / "old-profile-marker").read_text(encoding="utf-8") == "preserve"
+
+
+def test_handoff_does_not_replace_profile_without_explicit_flag(tmp_path: Path):
+    broker = BrowserHandoffBroker(tmp_path, runner=lambda *args, **kwargs: FakeProcess())
+    session = broker.create()
+    destination = tmp_path / "accounts" / "owned-account"
+    destination.mkdir(parents=True)
+    (destination / "marker").write_text("preserve", encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        broker.consume(session.token, promote_to=destination)
+
+    assert (destination / "marker").read_text(encoding="utf-8") == "preserve"
+    assert session.token in broker._sessions
+
+
+def test_handoff_failed_reauthentication_restores_previous_profile(monkeypatch, tmp_path: Path):
+    import gemini_webapi_mcp.browser_handoff as handoff
+
+    broker = BrowserHandoffBroker(tmp_path, runner=lambda *args, **kwargs: FakeProcess())
+    session = broker.create()
+    destination = tmp_path / "accounts" / "owned-account"
+    destination.mkdir(parents=True)
+    (destination / "marker").write_text("preserve", encoding="utf-8")
+    real_move = handoff.shutil.move
+    failed = False
+
+    def fail_new_profile(source, target):
+        nonlocal failed
+        if Path(source) == Path(session.profile) and not failed:
+            failed = True
+            raise OSError("simulated promotion failure")
+        return real_move(source, target)
+
+    monkeypatch.setattr(handoff.shutil, "move", fail_new_profile)
+    with pytest.raises(OSError, match="simulated promotion failure"):
+        broker.consume(session.token, promote_to=destination, replace_existing=True)
+
+    assert (destination / "marker").read_text(encoding="utf-8") == "preserve"
+    assert session.token in broker._sessions
 
 
 def test_shutdown_reclaims_active_desktop_and_capability(tmp_path: Path):
