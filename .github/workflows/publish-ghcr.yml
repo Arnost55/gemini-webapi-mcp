@@ -65,3 +65,31 @@ jobs:
             APP_VERSION=${{ steps.provenance.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Verify immutable image provenance
+        shell: bash
+        run: |
+          docker pull "${REGISTRY}/${IMAGE_NAME}:sha-${GITHUB_SHA}"
+          docker run --rm --entrypoint python "${REGISTRY}/${IMAGE_NAME}:sha-${GITHUB_SHA}" -c \
+            "from gemini_webapi_mcp.build_info import build_provenance; from gemini_webapi_mcp.server import mcp; p=build_provenance(); assert p['commit'] == '${GITHUB_SHA}', p; assert 'gemini_generate_image' in mcp._tool_manager._tools"
+
+      - name: Smoke test container startup
+        shell: bash
+        run: |
+          container_id=$(docker run --rm --detach --publish 127.0.0.1:18000:8000 "${REGISTRY}/${IMAGE_NAME}:sha-${GITHUB_SHA}")
+          cleanup() {
+            docker stop "$container_id" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          for attempt in $(seq 1 30); do
+            if curl --silent --show-error --max-time 2 --output /dev/null http://127.0.0.1:18000/mcp; then
+              exit 0
+            fi
+            if [ "$(docker inspect --format '{{.State.Running}}' "$container_id")" != "true" ]; then
+              docker logs "$container_id"
+              exit 1
+            fi
+            sleep 1
+          done
+          docker logs "$container_id"
+          exit 1

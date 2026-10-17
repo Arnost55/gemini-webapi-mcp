@@ -24,14 +24,6 @@ from gemini_webapi_mcp.server import (
 )
 
 
-_ONE_PIXEL_PNG = (
-    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\x0dIDAT"
-    b"\x08\xd7c\xf8\xcf\xc0\xf0\x1f\x00\x05\x00\x01\xff\x89\x99=\x1d"
-    b"\x00\x00\x00\x00IEND\xaeB`\x82"
-)
-
-
 def test_upstream_auto_refresh_is_explicitly_opt_in(monkeypatch):
     monkeypatch.delenv("GEMINI_UPSTREAM_AUTO_REFRESH", raising=False)
     assert _env_flag("GEMINI_UPSTREAM_AUTO_REFRESH", False) is False
@@ -42,16 +34,24 @@ def test_upstream_auto_refresh_is_explicitly_opt_in(monkeypatch):
 
 
 def test_image_tool_uses_unstructured_native_content_output():
-    from mcp.server.fastmcp.utilities.types import Image
-    from mcp.types import ImageContent, TextContent
+    from mcp.types import CallToolResult, ImageContent, TextContent
 
     tool = mcp._tool_manager._tools["gemini_generate_image"]
     assert tool.output_schema is None
-    converted = tool.fn_metadata.convert_result(["{\"images\": []}", Image(data=_ONE_PIXEL_PNG, format="png")])
-    assert isinstance(converted[0], TextContent)
-    assert isinstance(converted[1], ImageContent)
-    assert converted[1].mimeType == "image/png"
-    assert converted[1].data
+    native = CallToolResult(
+        content=[
+            TextContent(type="text", text="Generated image"),
+            ImageContent(type="image", data="aW1hZ2U=", mimeType="image/png"),
+        ],
+        structuredContent={"artifacts": [{"artifact_id": "private-id", "mime_type": "image/png"}]},
+    )
+    converted = tool.fn_metadata.convert_result(native)
+    assert converted is native
+    assert isinstance(converted.content[0], TextContent)
+    assert isinstance(converted.content[1], ImageContent)
+    assert converted.content[1].mimeType == "image/png"
+    assert converted.content[1].data not in converted.content[0].text
+    assert "storage_path" not in converted.structuredContent["artifacts"][0]
 
 
 def test_conversation_tools_are_registered():

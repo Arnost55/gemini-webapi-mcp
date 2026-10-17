@@ -31,6 +31,9 @@ from importlib.metadata import PackageNotFoundError, version as package_version
 from urllib.parse import parse_qsl, urlencode, quote, urlsplit, urlunsplit
 
 from mcp.server.fastmcp import FastMCP, Context
+from mcp.types import CallToolResult, TextContent
+from .build_info import build_provenance
+from .media import MediaType, create_media_artifact
 from .models import (
     MODEL_ROUTE_HEADER,
     ModelCatalogCache,
@@ -1323,9 +1326,10 @@ async def gemini_server_info() -> dict:
         schema_version = -1
     from .upstream import inspect_upstream
 
-    build_commit = os.environ.get("GEMINI_BUILD_COMMIT") or os.environ.get("GITHUB_SHA") or "unknown"
-    build_timestamp = os.environ.get("GEMINI_BUILD_TIMESTAMP") or "unknown"
-    build_version = os.environ.get("GEMINI_BUILD_VERSION") or _app_version()
+    provenance = build_provenance()
+    build_commit = provenance["commit"]
+    build_timestamp = provenance["timestamp"]
+    build_version = provenance["version"] if provenance["version"] != "unknown" else _app_version()
     return {
         "application_version": _app_version(),
         "build_commit": build_commit,
@@ -1333,10 +1337,7 @@ async def gemini_server_info() -> dict:
             "commit": build_commit,
             "timestamp": build_timestamp,
             "version": build_version,
-            "source": (
-                "GEMINI_BUILD_COMMIT" if os.environ.get("GEMINI_BUILD_COMMIT")
-                else "GITHUB_SHA" if os.environ.get("GITHUB_SHA") else "unavailable"
-            ),
+            "source": provenance["source"],
             "stream_serializer": _STREAM_SERIALIZER_VERSION,
             "upstream_revision": "4402e5231760a1e85e28eb6cd0040ff302b764de",
         },
@@ -1351,6 +1352,7 @@ async def gemini_server_info() -> dict:
             "chat", "persistent_conversations", "image_generation", "image_editing",
             "file_upload", "url_analysis", "account_scoped_model_catalog",
             "versioned_protocol_adapter",
+            "native_mcp_image_content", "account_private_media_artifacts",
         ],
         "registered_tools": tools,
         "registered_tool_count": len(tools),
@@ -1457,18 +1459,14 @@ def _get_media_dir(ctx: Context) -> Path:
 
 def _native_image_content(path: str):
     """Validate image bytes and return an MCP image with MIME from the bytes."""
-    from mcp.server.fastmcp.utilities.types import Image
-    from PIL import Image as PillowImage
-
-    raw = Path(path).read_bytes()
-    with PillowImage.open(Path(path)) as image:
-        image.verify()
-        image_format = (image.format or "").lower()
-    formats = {"jpeg": "jpeg", "jpg": "jpeg", "png": "png", "webp": "webp", "gif": "gif"}
-    normalized = formats.get(image_format)
-    if normalized is None:
-        raise ValueError("generated artifact has an unsupported image format")
-    return Image(data=raw, format=normalized)
+    resolved = Path(path).expanduser().resolve(strict=True)
+    artifact = create_media_artifact(
+        resolved,
+        account_id="local-content-validation",
+        media_type=MediaType.IMAGE,
+        media_root=resolved.parent,
+    )
+    return artifact.as_image_content("local-content-validation")
 
 
 _UPLOAD_MIME_TYPES = {
@@ -2320,7 +2318,7 @@ async def gemini_generate_image(
     thinking_level: Optional[str] = None,
     files: Optional[list[str]] = None,
     conversation_id: Optional[list[str]] = None,
-) -> str:
+):
     """Generate or edit images with Gemini.
 
     Without files: generates a new image from the text prompt.
@@ -2330,7 +2328,8 @@ async def gemini_generate_image(
     in the same conversation thread (e.g. "make it more dramatic", "add rain").
     You can also use a cid from the Gemini web URL (gemini.google.com/app/{cid}).
 
-    Images are saved to ~/Pictures/gemini/ and full file paths are returned.
+    Images are returned as native MCP image content. Private storage paths are
+    deliberately omitted from user-visible and structured results.
 
     Args:
         prompt: Description of the image to generate, or editing instruction
@@ -2344,7 +2343,8 @@ async def gemini_generate_image(
                          Passing just [cid] (from browser URL) also works.
 
     Returns:
-        JSON with generated image paths, conversation_id for continuation, or an error message.
+        Native MCP image content plus structured private-artifact metadata and
+        the conversation identifier needed for authorized follow-up editing.
     """
     import time
     t0 = time.monotonic()
@@ -2501,19 +2501,47 @@ async def gemini_generate_image(
             conv_id = [chat.cid or "", chat.rid or "", chat.rcid or ""]
         else:
             conv_id = metadata[:3] if metadata and metadata[0] else None
-        result = {
-            "text": response.text or "",
-            "images_saved_to": str(media_dir),
-            "images": saved,
-            "conversation_id": conv_id,
-        }
-        try:
-            image_blocks = [_native_image_content(item["path"]) for item in saved if Path(item["path"]).is_file()]
-            if image_blocks:
-                return [json.dumps(result, ensure_ascii=False, indent=2), *image_blocks]
-        except Exception:
-            logger.warning("MCP image content conversion failed", exc_info=True)
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        manager = ctx.request_context.lifespan_context["account_clients"]
+        subject, account = manager.conversation_owner(ctx)
+        artifact_owner = f"{subject}\x1f{account}"
+        artifacts = []
+        image_blocks = []
+        for item in saved:
+            try:
+                artifact = create_media_artifact(
+                    item["path"],
+                    account_id=artifact_owner,
+                    conversation_reference=conv_id,
+                    media_type=MediaType.IMAGE,
+                    media_root=media_dir,
+                )
+                artifacts.append(artifact)
+                image_blocks.append(artifact.as_image_content(artifact_owner))
+            except (OSError, ValueError):
+                logger.warning("Generated image artifact validation failed", exc_info=True)
+
+        if not image_blocks:
+            raise RuntimeError("image generation returned no valid image artifacts")
+
+        from .protocol.normalization import normalize_response_text
+        normalized = normalize_response_text(response.text or "")
+        public_text = normalized.text.strip()
+        content = []
+        if public_text:
+            content.append(TextContent(type="text", text=public_text))
+        content.extend(image_blocks)
+        return CallToolResult(
+            content=content,
+            structuredContent={
+                "text": public_text,
+                "artifacts": [artifact.public_metadata() for artifact in artifacts],
+                "conversation_id": conv_id,
+                "follow_ups": [
+                    {"label": item.label, "query": item.query}
+                    for item in normalized.follow_ups
+                ],
+            },
+        )
 
     except Exception as e:
         return _handle_error(e, operation="image")
