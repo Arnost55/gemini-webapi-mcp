@@ -24,7 +24,7 @@
 
 - **Image generation** from text descriptions (Nano Banana 2 with aspect ratio support)
 - **Responsive MCP image gallery** with natural aspect ratios, mobile sizing, fullscreen, zoom, and real regenerate/edit actions
-- **Private video presentation foundation** with account-scoped MP4/WebM validation and an MCP App HTML5 player
+- **Video presentation components** with MP4/WebM validation and an MCP App player; Gemini video generation and secure MCP video delivery are not implemented
 - **Explicit Studio capability discovery** for Gemini video and NotebookLM without advertising unverified private protocols
 - **2x resolution** — automatically downloads upscaled version (2048x2048 → 2816x1536 and above)
 - **Image editing** — send an image + prompt to get a modified version
@@ -92,6 +92,22 @@ black-screen failure path, health checks, and safe rollback procedure.
 See [`docs/phase-5.3.md`](docs/phase-5.3.md) for the Gemini Studio capability
 matrix, image/video MCP App details, verified NotebookLM boundary, deployment,
 and rollback instructions.
+
+### 1.0.0 candidate status and verified scope
+
+The source/package version is prepared as `1.0.0`, but this is not yet an
+official stable release: no `v1.0.0` tag, GitHub Release, or container image is
+published by this change. ChatGPT Android acceptance of this viewer revision
+also remains pending user confirmation. Gemini video generation is not an MCP
+workflow, and NotebookLM management, source upload, grounded chat, and Studio
+generation tools are not implemented. Capability discovery reports these
+boundaries rather than claiming unsupported success. Gemini Pro routing and
+independent thinking-level mappings remain unverified and can be affected by
+Google account entitlements and upstream UI/protocol changes.
+
+See [`CHANGELOG.md`](CHANGELOG.md) and [`docs/release-1.0.0.md`](docs/release-1.0.0.md)
+for candidate scope, immutable build/deployment guidance, backup, rollback,
+troubleshooting, and support boundaries.
 
 The browser handoff is served by the built-in OAuth authorization page when
 `GEMINI_PUBLIC_URL` and `GEMINI_NOVNC_WS_URL` are set. The link opens the
@@ -272,10 +288,12 @@ environment. If Chrome cannot start, roll back only the image and environment
 setting while preserving `gemini-state` and the registry key; do not delete or
 recreate either.
 
-Example production command (the key file and named volume are existing data):
+Example production command (replace the image SHA with the reviewed full commit;
+this candidate has not published an image; the key file and named volume are
+existing data):
 
 ```bash
-docker pull ghcr.io/arnost55/gemini-webapi-mcp:latest
+docker pull ghcr.io/arnost55/gemini-webapi-mcp:sha-REPLACE_WITH_FULL_COMMIT_SHA
 docker rm -f gemini-mcp 2>/dev/null || true
 docker run -d \
   --name gemini-mcp \
@@ -298,7 +316,7 @@ docker run -d \
   -e GEMINI_BROWSER_CHANNEL=chrome \
   -e GEMINI_CHROMIUM_SANDBOX=true \
   -e GEMINI_HEADLESS=0 \
-  ghcr.io/arnost55/gemini-webapi-mcp:latest
+  ghcr.io/arnost55/gemini-webapi-mcp:sha-REPLACE_WITH_FULL_COMMIT_SHA
 ```
 
 Verify the setting without exposing cookies or credentials:
@@ -599,7 +617,7 @@ local image, pass the same provenance explicitly:
 docker build \
   --build-arg VCS_REF="$(git rev-parse HEAD)" \
   --build-arg BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
-  --build-arg APP_VERSION="0.2.0" \
+  --build-arg APP_VERSION="1.0.0" \
   -t gemini-webapi-mcp:local .
 ```
 

@@ -39,10 +39,10 @@ button,a{font:inherit}
 button:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 #app{position:relative;width:100%}
 #status{min-height:20px;margin:5px 4px 9px;color:var(--muted);font-size:13px}
-#stage{position:relative;display:grid;place-items:center;width:fit-content;max-width:100%;min-height:180px;margin-inline:auto;overflow:hidden;border:1px solid var(--line);border-radius:14px;background:transparent}
+#stage{position:relative;display:grid;place-items:center;width:fit-content;max-width:100%;min-height:0;margin-inline:auto;overflow:hidden;border:1px solid var(--line);border-radius:14px;background:transparent}
 #stage.empty{width:100%}
 #stage.empty{min-height:clamp(180px,40vw,320px)}
-#image{display:block;width:auto;height:auto;max-width:100%;max-height:900px;object-fit:contain;cursor:zoom-in;user-select:none;-webkit-user-drag:none;transform-origin:center;transition:opacity 160ms ease,transform 140ms ease}
+#image{display:block;width:auto;height:auto;max-width:100%;max-height:min(900px,calc(100vh - 160px));max-height:min(900px,calc(100dvh - 160px));object-fit:contain;cursor:zoom-in;user-select:none;-webkit-user-drag:none;transform-origin:center;transition:opacity 160ms ease,transform 140ms ease}
 #image[hidden],#error[hidden]{display:none}
 #stage.loading:after{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(105deg,transparent 25%,color-mix(in srgb,CanvasText 8%,transparent) 45%,transparent 65%);animation:shimmer 1.4s infinite}
 @keyframes shimmer{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
@@ -63,11 +63,12 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offs
 #actions{display:flex;flex-wrap:wrap;gap:8px;padding:10px 4px 2px}
 #actions .action{position:static;min-height:36px;color:CanvasText;border-color:var(--line);background:transparent;backdrop-filter:none}
 #actions .action:hover{background:color-mix(in srgb,CanvasText 6%,transparent)}
-#expanded{position:fixed;inset:0;z-index:20;display:grid;grid-template-rows:auto 1fr;background:transparent;padding:max(10px,env(safe-area-inset-top)) max(10px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left))}
+#expanded{position:fixed;inset:0;z-index:20;display:grid;grid-template-rows:auto minmax(0,1fr);height:100vh;height:100dvh;min-height:0;overflow:hidden;overscroll-behavior:contain;background:transparent;padding:max(10px,env(safe-area-inset-top)) max(10px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left))}
 #expanded[hidden]{display:none}
 #expandedBar{display:flex;justify-content:flex-end;gap:7px;padding-bottom:8px}
-#expandedImageWrap{min-height:0;overflow:auto;display:grid;place-items:center}
-#expandedImage{display:block;max-width:100%;max-height:100%;object-fit:contain;transform-origin:center}
+#expandedImageWrap{min-width:0;min-height:0;overflow:hidden;display:grid;place-items:center;overscroll-behavior:contain;touch-action:pan-x pan-y}
+#expandedImageWrap.zoomed{overflow:auto}
+#expandedImage{display:block;width:auto;height:auto;max-width:none;max-height:none;object-fit:contain;transform-origin:center}
 @media(max-width:480px){body{padding:2px}#stage{border-radius:12px}.controls{inset:8px 8px auto}}
 @media(prefers-reduced-motion:reduce){*,*:after{animation:none!important;transition:none!important}}
 </style>
@@ -114,8 +115,31 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offs
   let items=[],selected=0,metadata={},lastHeight=0,resizeFrame=0,scale=1;
 
   function envelope(v){return!v||typeof v!=="object"?null:v.mcp_tool_result||v.mcpToolResult||v.call_tool_result||v.callToolResult||v.result||v}
+  function fitInlineImage(){
+    if(image.hidden||!items.length)return;
+    const bodyStyle=getComputedStyle(document.body),statusStyle=getComputedStyle(status),stageStyle=getComputedStyle(stage);
+    const px=value=>Number.parseFloat(value)||0;
+    const statusSpace=status.getBoundingClientRect().height+px(statusStyle.marginTop)+px(statusStyle.marginBottom);
+    const stageBorders=px(stageStyle.borderTopWidth)+px(stageStyle.borderBottomWidth);
+    const gallerySpace=galleryNav.hidden?0:galleryNav.getBoundingClientRect().height;
+    const actionSpace=actions.hidden?0:actions.getBoundingClientRect().height;
+    const bodySpace=px(bodyStyle.paddingTop)+px(bodyStyle.paddingBottom);
+    const available=Math.max(48,Math.floor(window.innerHeight-bodySpace-statusSpace-stageBorders-gallerySpace-actionSpace-8));
+    const next=`${available}px`;
+    if(image.style.maxHeight!==next)image.style.maxHeight=next;
+  }
+  function fitExpandedImage(){
+    if(expanded.hidden||!expandedImage.complete||!expandedImage.naturalWidth||!expandedImage.naturalHeight)return;
+    const width=expandedImage.parentElement.clientWidth,height=expandedImage.parentElement.clientHeight;
+    if(!width||!height)return;
+    const ratio=expandedImage.naturalWidth/expandedImage.naturalHeight;
+    const fitWidth=Math.min(width,height*ratio),fitHeight=fitWidth/ratio;
+    expandedImage.style.width=`${fitWidth}px`;expandedImage.style.height=`${fitHeight}px`;
+  }
   function reportHeight(){
     resizeFrame=0;
+    fitInlineImage();
+    fitExpandedImage();
     const style=getComputedStyle(document.body),bottomPadding=parseFloat(style.paddingBottom)||0,rect=app.getBoundingClientRect();
     const height=Math.max(80,Math.min(2400,Math.ceil(rect.bottom+bottomPadding)));
     if(Math.abs(height-lastHeight)<2)return;
@@ -157,7 +181,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offs
     image.dataset.source=item.src;expand.hidden=download.hidden=true;
     image.style.aspectRatio=dimsForImage?`${dimsForImage.w} / ${dimsForImage.h}`:"auto";
     if(dimsForImage){image.width=dimsForImage.w;image.height=dimsForImage.h}else{image.removeAttribute("width");image.removeAttribute("height")}
-    if(!expanded.hidden){expandedImage.src=item.src;if(dimsForImage){expandedImage.width=dimsForImage.w;expandedImage.height=dimsForImage.h}else{expandedImage.removeAttribute("width");expandedImage.removeAttribute("height")}}
+    if(!expanded.hidden){expandedImage.src=item.src;if(dimsForImage){expandedImage.width=dimsForImage.w;expandedImage.height=dimsForImage.h}else{expandedImage.removeAttribute("width");expandedImage.removeAttribute("height")}scheduleHeight()}
     download.download=item.filename;counter.textContent=`${selected+1} / ${items.length}`;
     [...thumbs.children].forEach((node,j)=>node.setAttribute("aria-current",String(j===selected)));
     if(focus&&thumbs.children[selected])thumbs.children[selected].focus();
@@ -197,7 +221,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offs
     }catch(_){status.textContent="Could not download this image. Try again or use the host’s image save option."}
     finally{download.removeAttribute("aria-busy");download.removeAttribute("aria-disabled");scheduleHeight()}
   }
-  function setZoom(value){scale=Math.max(.5,Math.min(4,value));expandedImage.style.transform=`scale(${scale})`;zoomReset.textContent=`${Math.round(scale*100)}%`;scheduleHeight()}
+  function setZoom(value){scale=Math.max(.5,Math.min(4,value));expandedImage.style.transform=`scale(${scale})`;expandedImage.parentElement.classList.toggle("zoomed",scale>1);zoomReset.textContent=scale===1?"Fit":`${Math.round(scale*100)}%`;scheduleHeight()}
   async function callTool(prompt,conversationId){
     if(!prompt||!window.openai||typeof window.openai.callTool!=="function"){status.textContent="Image actions are unavailable in this client.";return}
     const args={prompt};if(conversationId)args.conversation_id=conversationId;
@@ -206,10 +230,10 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offs
   async function openExpanded(){
     if(!items.length||image.hidden||!image.complete||!image.naturalWidth||!image.naturalHeight)return;expandedImage.src=image.currentSrc||items[selected].src;setZoom(1);
     if(window.openai&&typeof window.openai.requestDisplayMode==="function")try{await window.openai.requestDisplayMode({mode:"fullscreen"})}catch(_){}
-    expanded.hidden=false;document.body.style.overflow="hidden";$("close").focus();scheduleHeight();
+    expanded.hidden=false;fitExpandedImage();$("close").focus();scheduleHeight();
   }
   async function closeExpanded(){
-    expanded.hidden=true;document.body.style.overflow="";setZoom(1);
+    expanded.hidden=true;setZoom(1);
     if(window.openai&&typeof window.openai.requestDisplayMode==="function")try{await window.openai.requestDisplayMode({mode:"inline"})}catch(_){}
     expand.focus();scheduleHeight();
   }
@@ -220,6 +244,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offs
     status.textContent=items.length===1?"Generated image":`${items.length} generated images`;
     expand.hidden=download.hidden=false;scheduleHeight();
   });
+  expandedImage.addEventListener("load",scheduleHeight);
   image.addEventListener("error",()=>{
     if(image.currentSrc!==image.dataset.source)return;
     stage.classList.remove("loading");image.hidden=true;error.hidden=false;error.textContent="This image could not be displayed.";

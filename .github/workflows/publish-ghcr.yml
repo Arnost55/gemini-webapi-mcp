@@ -2,19 +2,21 @@ name: Build and publish container
 
 on:
   push:
-    branches:
-      - "**"
-  workflow_dispatch:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  publish:
+  build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: write
 
     steps:
       - name: Check out repository
@@ -23,12 +25,13 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GHCR
+      - name: Log in to GHCR for version tags only
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GH }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract image metadata
         id: meta
@@ -37,8 +40,8 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=sha,format=long
-            type=ref,event=branch
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{raw}}
 
       - name: Resolve reproducible build provenance
         id: provenance
@@ -51,33 +54,43 @@ jobs:
               print(f"version={tomllib.load(source)['project']['version']}")
           PY
 
-      - name: Build and push image
+      - name: Build and publish versioned image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-          push: true
+          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          load: ${{ !startsWith(github.ref, 'refs/tags/v') }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VCS_REF=${{ github.sha }}
             BUILD_DATE=${{ steps.provenance.outputs.timestamp }}
             APP_VERSION=${{ steps.provenance.outputs.version }}
+          provenance: mode=max
+          sbom: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Resolve immutable image reference
+        id: image
+        shell: bash
+        run: echo "ref=${REGISTRY}/${IMAGE_NAME,,}:sha-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Pull the published immutable image
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: docker pull "${{ steps.image.outputs.ref }}"
 
       - name: Verify immutable image provenance
         shell: bash
         run: |
-          image_ref="${REGISTRY}/${IMAGE_NAME,,}:sha-${GITHUB_SHA}"
-          docker pull "$image_ref"
-          docker run --rm --entrypoint /app/.venv/bin/python "$image_ref" -c \
-            "from gemini_webapi_mcp.build_info import build_provenance; from gemini_webapi_mcp.server import mcp; p=build_provenance(); assert p['commit'] == '${GITHUB_SHA}', p; assert 'gemini_generate_image' in mcp._tool_manager._tools"
+          docker run --rm --entrypoint /app/.venv/bin/python "${{ steps.image.outputs.ref }}" -c \
+            "from gemini_webapi_mcp.build_info import build_provenance; from gemini_webapi_mcp.server import mcp; p=build_provenance(); assert p['commit'] == '${GITHUB_SHA}', p; assert p['version'] == '${{ steps.provenance.outputs.version }}', p; assert 'gemini_generate_image' in mcp._tool_manager._tools"
 
       - name: Smoke test container startup
         shell: bash
         run: |
-          image_ref="${REGISTRY}/${IMAGE_NAME,,}:sha-${GITHUB_SHA}"
+          image_ref="${{ steps.image.outputs.ref }}"
           container_id=$(docker run --rm --detach --publish 127.0.0.1:18000:8000 "$image_ref")
           cleanup() {
             docker stop "$container_id" >/dev/null 2>&1 || true

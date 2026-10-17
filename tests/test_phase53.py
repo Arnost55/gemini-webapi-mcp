@@ -24,7 +24,7 @@ from gemini_webapi_mcp.video_viewer import (
 
 def test_image_viewer_has_responsive_gallery_and_real_host_actions():
     required = (
-        "width:auto;height:auto;max-width:100%;max-height:900px",
+        "width:auto;height:auto;max-width:100%;max-height:min(900px,calc(100vh - 160px))",
         "object-fit:contain",
         "ResizeObserver",
         "notifyIntrinsicHeight",
@@ -81,7 +81,10 @@ def test_image_viewer_height_measurement_and_letterboxing_are_transparent():
     ):
         assert check in IMAGE_VIEWER_HTML
     assert "document.documentElement.scrollHeight" not in IMAGE_VIEWER_HTML
-    assert "width:fit-content;max-width:100%;min-height:180px" in IMAGE_VIEWER_HTML
+    assert "width:fit-content;max-width:100%;min-height:0" in IMAGE_VIEWER_HTML
+    assert "#stage.empty{min-height:clamp(180px,40vw,320px)}" in IMAGE_VIEWER_HTML
+    assert "function fitInlineImage()" in IMAGE_VIEWER_HTML
+    assert "function fitExpandedImage()" in IMAGE_VIEWER_HTML
     assert "#stage.empty{width:100%}" in IMAGE_VIEWER_HTML
     assert IMAGE_VIEWER_HTML.count("background:transparent") >= 3
 

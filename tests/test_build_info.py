@@ -23,13 +23,13 @@ def _clear_runtime(monkeypatch):
 def test_baked_build_metadata_is_used_without_runtime_environment(monkeypatch):
     _clear_runtime(monkeypatch)
     monkeypatch.setattr(build_info, "files", lambda _package: _EmbeddedBuild({
-        "commit": "abc123", "timestamp": "2026-10-17T12:00:00Z", "version": "0.2.0"
+        "commit": "abc123", "timestamp": "2026-10-17T12:00:00Z", "version": "1.0.0"
     }))
 
     assert build_info.build_provenance() == {
         "commit": "abc123",
         "timestamp": "2026-10-17T12:00:00Z",
-        "version": "0.2.0",
+        "version": "1.0.0",
         "source": "image_metadata",
     }
 

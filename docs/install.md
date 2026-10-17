@@ -223,7 +223,7 @@ docker run -d \
   -e GEMINI_NOVNC_PORT=6080 \
   -e GEMINI_NOVNC_WS_URL=wss://novnc.gemini.proxmoxserver.dev/websockify \
   -e GEMINI_VIEWER_FRAME_ANCESTORS="'self' https://chatgpt.com" \
-  ghcr.io/arnost55/gemini-webapi-mcp:latest
+  ghcr.io/arnost55/gemini-webapi-mcp:sha-REPLACE_WITH_FULL_COMMIT_SHA
 ```
 
 The host must have the reviewed profile at
@@ -265,7 +265,7 @@ Save this as `docker-compose.yml` beside `registry.key`:
 ```yaml
 services:
   gemini-mcp:
-    image: ghcr.io/arnost55/gemini-webapi-mcp:latest
+    image: ghcr.io/arnost55/gemini-webapi-mcp:sha-REPLACE_WITH_FULL_COMMIT_SHA
     restart: unless-stopped
     ports:
       - "127.0.0.1:8019:8000"

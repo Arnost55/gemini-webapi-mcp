@@ -79,12 +79,21 @@ def _launch_browser(playwright):
         pytest.skip(f"Configured Chromium browser could not launch: {type(exc).__name__}")
 
 
-def _open_viewer(browser, blocks, viewport=(390, 844), color_scheme="light", viewer_html=IMAGE_VIEWER_HTML):
+def _open_viewer(
+    browser,
+    blocks,
+    viewport=(390, 844),
+    color_scheme="light",
+    viewer_html=IMAGE_VIEWER_HTML,
+    frame_height=None,
+):
     page = browser.new_page(viewport={"width": viewport[0], "height": viewport[1]}, color_scheme=color_scheme)
     source = _sandboxed_html(blocks, viewer_html)
+    frame_height = frame_height or viewport[1]
     page.set_content(
+        "<style>html,body{margin:0;width:100%;height:100%;overflow:hidden}iframe{display:block;width:100%;border:0}</style>"
         "<script>window.__downloads=[];window.addEventListener('message',e=>window.__downloads.push(e.data))</script>"
-        "<iframe sandbox='allow-scripts' style='width:100%;height:100%;border:0' srcdoc=\""
+        f"<iframe sandbox='allow-scripts' style='height:{frame_height}px' srcdoc=\""
         + html.escape(source, quote=True)
         + "\"></iframe>"
     )
@@ -160,3 +169,76 @@ def test_image_viewer_reports_actual_decode_failure():
             assert viewer.locator("#status").inner_text() == "Image unavailable"
         finally:
             browser.close()
+
+
+def test_image_viewer_fits_images_without_iframe_scrolling_across_viewports():
+    viewports = ((360, 640), (430, 932), (768, 1024), (1280, 800), (1920, 1080))
+    dimensions_list = ((896, 1200), (1376, 768), (1024, 1024))
+    with sync_playwright() as playwright:
+        browser = _launch_browser(playwright)
+        try:
+            for viewport in viewports:
+                for dimensions in dimensions_list:
+                    width, height = dimensions
+                    block = {
+                        "mime": "image/png",
+                        "data": _image_data("PNG", dimensions, "teal"),
+                        "filename": "geometry.png",
+                        "width": width,
+                        "height": height,
+                    }
+                    page, viewer = _open_viewer(
+                        browser,
+                        [block],
+                        viewport=viewport,
+                        frame_height=min(viewport[1], 360),
+                    )
+                    main = viewer.locator("#image")
+                    main.wait_for(state="visible")
+                    main.evaluate("image => image.decode()")
+                    inline_geometry = viewer.locator("body").evaluate(
+                        "body => ({client:body.clientHeight, scroll:body.scrollHeight, "
+                        "image:document.querySelector('#image').getBoundingClientRect().toJSON(), "
+                        "stage:document.querySelector('#stage').getBoundingClientRect().toJSON()})"
+                    )
+                    assert inline_geometry["scroll"] <= inline_geometry["client"] + 1, (
+                        f"inline overflow at viewport={viewport}, image={dimensions}: {inline_geometry}"
+                    )
+                    image_box, stage_box = inline_geometry["image"], inline_geometry["stage"]
+                    assert image_box["top"] >= stage_box["top"] - 1
+                    assert image_box["bottom"] <= stage_box["bottom"] + 1
+                    assert abs(image_box["width"] / image_box["height"] - width / height) < 0.01
+
+                    viewer.locator("#expand").click()
+                    expanded_geometry = viewer.locator("#expandedImageWrap").evaluate(
+                        "wrap => ({client:wrap.clientHeight, scroll:wrap.scrollHeight, "
+                        "image:document.querySelector('#expandedImage').getBoundingClientRect().toJSON(), "
+                        "wrapBox:wrap.getBoundingClientRect().toJSON()})"
+                    )
+                    assert expanded_geometry["scroll"] <= expanded_geometry["client"] + 1, (
+                        f"expanded overflow at viewport={viewport}, image={dimensions}: {expanded_geometry}"
+                    )
+                    image_box, wrap_box = expanded_geometry["image"], expanded_geometry["wrapBox"]
+                    assert image_box["top"] >= wrap_box["top"] - 1
+                    assert image_box["bottom"] <= wrap_box["bottom"] + 1
+                    assert abs(image_box["width"] / image_box["height"] - width / height) < 0.01
+                    assert abs((image_box["left"] + image_box["right"] - wrap_box["left"] - wrap_box["right"]) / 2) < 2
+                    assert viewer.locator("#expandedBar").evaluate(
+                        "bar => { const r=bar.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight }"
+                    )
+                    viewer.get_by_role("button", name="Zoom in").click()
+                    assert viewer.locator("#expandedImageWrap").evaluate(
+                        "e => getComputedStyle(e).overflow"
+                    ) == "auto"
+                    viewer.get_by_role("button", name="Reset zoom").click()
+                    assert viewer.get_by_role("button", name="Reset zoom").inner_text() == "Fit"
+                    assert viewer.locator("#expandedImageWrap").evaluate(
+                        "e => e.scrollHeight <= e.clientHeight + 1"
+                    )
+                    viewer.get_by_role("button", name="Close expanded image").click()
+                    assert main.evaluate("image => image.naturalHeight") == height
+                    page.close()
+            browser.close()
+        finally:
+            if browser.is_connected():
+                browser.close()
