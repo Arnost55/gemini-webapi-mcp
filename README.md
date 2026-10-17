@@ -576,6 +576,15 @@ cookies, OAuth tokens, browser identifiers, or file contents. MCP clients that
 cache `tools/list` must reconnect or explicitly refresh the server connection
 after upgrading the image.
 
+Successful `gemini_generate_image` calls return a non-empty text block, native
+MCP image blocks, structured delivery metadata, and a private MCP App viewer
+resource for hosts that support `ui://` results. The viewer uses the existing
+tool-result payload and does not publish an artifact URL. Set
+`GEMINI_IMAGE_DELIVERY_DIAGNOSTICS=1` only while diagnosing delivery: it emits
+correlated metadata for generation through ASGI response completion, but never
+prompts, credentials, paths, image bytes, or base64. Server transport
+completion does not prove that a connector or client UI displayed the result.
+
 Release containers embed the Git commit, UTC build timestamp, application
 version, serializer revision, and pinned upstream revision. For an equivalent
 local image, pass the same provenance explicitly:

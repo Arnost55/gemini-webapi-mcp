@@ -5,6 +5,7 @@ import asyncio
 import os
 from urllib.parse import parse_qs
 
+from gemini_webapi_mcp.observability import ImageDeliveryTransportDiagnostics
 from gemini_webapi_mcp.server import mcp
 
 
@@ -141,7 +142,11 @@ def main():
         mcp.settings.port = args.port
     if args.transport == "streamable-http":
         import uvicorn
-        app = _WebsockifyCompat(_ChatGPTContentTypeCompat(mcp.streamable_http_app()))
+        app = _WebsockifyCompat(
+            ImageDeliveryTransportDiagnostics(
+                _ChatGPTContentTypeCompat(mcp.streamable_http_app())
+            )
+        )
         config = uvicorn.Config(app, host=mcp.settings.host, port=mcp.settings.port, log_level=mcp.settings.log_level.lower())
         uvicorn.Server(config).run()
     else:

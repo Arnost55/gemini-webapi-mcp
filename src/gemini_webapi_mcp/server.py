@@ -33,7 +33,9 @@ from urllib.parse import parse_qsl, urlencode, quote, urlsplit, urlunsplit
 from mcp.server.fastmcp import FastMCP, Context
 from mcp.types import CallToolResult, TextContent
 from .build_info import build_provenance
+from .image_viewer import IMAGE_VIEWER_HTML, IMAGE_VIEWER_URI
 from .media import MediaType, create_media_artifact
+from .observability import image_delivery_event, new_correlation_id
 from .models import (
     MODEL_ROUTE_HEADER,
     ModelCatalogCache,
@@ -794,6 +796,19 @@ async def app_lifespan(server):
 
 
 mcp = FastMCP("gemini-webapi-mcp", lifespan=app_lifespan)
+
+
+@mcp.resource(
+    IMAGE_VIEWER_URI,
+    name="gemini-image-result-viewer",
+    title="Gemini image result",
+    description="Private MCP App viewer for native image tool results.",
+    mime_type="text/html;profile=mcp-app",
+    meta={"ui": {"prefersBorder": True}},
+)
+def gemini_image_result_viewer() -> str:
+    """Return a static viewer; image bytes arrive only in the tool result."""
+    return IMAGE_VIEWER_HTML
 
 
 def _app_version() -> str:
@@ -2310,6 +2325,10 @@ async def gemini_switch_model(session_id: str, model: str, ctx: Context,
         "idempotentHint": False,
         "openWorldHint": True,
     },
+    meta={
+        "ui": {"resourceUri": IMAGE_VIEWER_URI},
+        "openai/outputTemplate": IMAGE_VIEWER_URI,
+    },
 )
 async def gemini_generate_image(
     prompt: str,
@@ -2346,8 +2365,15 @@ async def gemini_generate_image(
         Native MCP image content plus structured private-artifact metadata and
         the conversation identifier needed for authorized follow-up editing.
     """
-    import time
     t0 = time.monotonic()
+    correlation_id = new_correlation_id()
+    diagnostic_model = model or DEFAULT_MODEL
+    image_delivery_event(
+        "tool_execution_started",
+        correlation_id=correlation_id,
+        status="started",
+        model=diagnostic_model,
+    )
     try:
         if thinking_level is not None:
             # Image generation uses a separately captured browser route. The
@@ -2405,6 +2431,14 @@ async def gemini_generate_image(
             except asyncio.TimeoutError:
                 logger.warning("generate_content exceeded %.0fs cap — aborting", GEN_TIMEOUT)
                 await ctx.request_context.lifespan_context["account_clients"].invalidate(ctx, client)
+                image_delivery_event(
+                    "tool_execution_failed",
+                    correlation_id=correlation_id,
+                    status="timeout",
+                    model=diagnostic_model,
+                    exception_category="TimeoutError",
+                    duration_ms=round((time.monotonic() - t0) * 1000),
+                )
                 return (
                     f"Error: Gemini did not return an image within {GEN_TIMEOUT:.0f}s "
                     "via the library (the browser is usually faster). Try again."
@@ -2412,6 +2446,14 @@ async def gemini_generate_image(
             finally:
                 _image_mode.reset(mode_token)
             _stage("generate_content returned", t)
+        image_delivery_event(
+            "gemini_generation_completed",
+            correlation_id=correlation_id,
+            status="complete",
+            model=diagnostic_model,
+            artifact_count=len(response.images),
+            duration_ms=round((time.monotonic() - t0) * 1000),
+        )
 
         if not response.images:
             # A text-only image response is not a successful image generation.
@@ -2494,7 +2536,22 @@ async def gemini_generate_image(
                 logger.warning("Watermark removal failed: %s", wm_err)
             t = _stage(f"watermark removal image {i}", t)
             title = getattr(image, "title", None) or f"image_{i}"
-            saved.append({"title": title, "path": filepath, "dir": str(media_dir)})
+            saved.append(
+                {
+                    "title": title,
+                    "path": filepath,
+                    "dir": str(media_dir),
+                    "source_index": i,
+                }
+            )
+
+        image_delivery_event(
+            "image_download_completed",
+            correlation_id=correlation_id,
+            status="complete" if saved else "failed",
+            artifact_count=len(saved),
+            duration_ms=round((time.monotonic() - t0) * 1000),
+        )
 
         # For response: prefer chat metadata (clean cid/rid/rcid), fall back to raw
         if chat:
@@ -2506,6 +2563,7 @@ async def gemini_generate_image(
         artifact_owner = f"{subject}\x1f{account}"
         artifacts = []
         image_blocks = []
+        extracted_image_indices = []
         for item in saved:
             try:
                 artifact = create_media_artifact(
@@ -2517,33 +2575,81 @@ async def gemini_generate_image(
                 )
                 artifacts.append(artifact)
                 image_blocks.append(artifact.as_image_content(artifact_owner))
+                extracted_image_indices.append(item["source_index"])
             except (OSError, ValueError):
                 logger.warning("Generated image artifact validation failed", exc_info=True)
 
         if not image_blocks:
             raise RuntimeError("image generation returned no valid image artifacts")
 
+        mime_types = [block.mimeType for block in image_blocks]
+        encoded_bytes = sum(len(block.data) for block in image_blocks)
+        image_delivery_event(
+            "artifact_validation_completed",
+            correlation_id=correlation_id,
+            status="complete",
+            artifact_count=len(artifacts),
+            image_blocks=len(image_blocks),
+            mime_types=mime_types,
+            encoded_bytes=encoded_bytes,
+        )
+
         from .protocol.normalization import normalize_response_text
-        normalized = normalize_response_text(response.text or "")
+        normalized = normalize_response_text(
+            response.text or "", extracted_image_indices=extracted_image_indices
+        )
         public_text = normalized.text.strip()
-        content = []
-        if public_text:
-            content.append(TextContent(type="text", text=public_text))
+        visible_text = public_text or (
+            "Generated image successfully."
+            if len(image_blocks) == 1
+            else f"Generated {len(image_blocks)} images successfully."
+        )
+        content = [TextContent(type="text", text=visible_text)]
         content.extend(image_blocks)
-        return CallToolResult(
+        result = CallToolResult(
             content=content,
             structuredContent={
-                "text": public_text,
+                "text": visible_text,
                 "artifacts": [artifact.public_metadata() for artifact in artifacts],
                 "conversation_id": conv_id,
+                "correlation_id": correlation_id,
+                "delivery": {
+                    "status": "complete",
+                    "image_blocks": len(image_blocks),
+                    "text_blocks": 1,
+                    "mime_types": mime_types,
+                    "encoded_bytes": encoded_bytes,
+                },
                 "follow_ups": [
                     {"label": item.label, "query": item.query}
                     for item in normalized.follow_ups
                 ],
             },
+            isError=False,
+            _meta={"correlation_id": correlation_id},
         )
+        image_delivery_event(
+            "mcp_result_serialization_ready",
+            correlation_id=correlation_id,
+            status="complete",
+            artifact_count=len(artifacts),
+            image_blocks=len(image_blocks),
+            text_blocks=1,
+            mime_types=mime_types,
+            encoded_bytes=encoded_bytes,
+            duration_ms=round((time.monotonic() - t0) * 1000),
+        )
+        return result
 
     except Exception as e:
+        image_delivery_event(
+            "tool_execution_failed",
+            correlation_id=correlation_id,
+            status="failed",
+            model=diagnostic_model,
+            exception_category=type(e).__name__,
+            duration_ms=round((time.monotonic() - t0) * 1000),
+        )
         return _handle_error(e, operation="image")
     finally:
         # Reset request-local parser state even when an image download fails.

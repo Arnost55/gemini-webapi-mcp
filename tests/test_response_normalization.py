@@ -37,7 +37,8 @@ def test_extracts_trailing_image_and_follow_up_protocol_without_exposing_markup(
     result = normalize_response_text(
         'Here is the requested image.\n\n'
         '<Image alt="generated" src="image_generation_content/0"/>\n'
-        '<FollowUp query="Make it brighter"/>\n'
+        '<FollowUp query="Make it brighter"/>\n',
+        extracted_image_count=1,
     )
     assert result.text == "Here is the requested image."
     assert result.image_markers == 1
@@ -63,3 +64,38 @@ def test_preserves_unknown_image_reference_markup():
     result = normalize_response_text(text)
     assert result.text == text
     assert result.image_markers == 0
+
+
+def test_removes_only_markers_for_images_that_were_extracted():
+    text = (
+        'Generated.\n'
+        '<Image alt="first" src="image_generation_content/0"/>\n'
+        '<Image alt="missing" src="image_generation_content/1"/>\n'
+    )
+    result = normalize_response_text(text, extracted_image_count=1)
+    assert 'image_generation_content/0' not in result.text
+    assert 'image_generation_content/1' in result.text
+    assert result.image_markers == 1
+
+
+def test_preserves_protocol_image_marker_until_image_is_extracted():
+    text = '<Image alt="generated" src="image_generation_content/0"/>\n'
+    assert normalize_response_text(text).text == text
+
+
+def test_preserves_protocol_image_marker_inside_fenced_code():
+    text = '```xml\n<Image src="image_generation_content/0"/>\n```\n'
+    result = normalize_response_text(text, extracted_image_count=1)
+    assert result.text == text
+    assert result.image_markers == 0
+
+
+def test_removes_only_exact_successfully_extracted_image_indices():
+    text = (
+        '<Image src="image_generation_content/0"/>\n'
+        '<Image src="image_generation_content/1"/>\n'
+    )
+    result = normalize_response_text(text, extracted_image_indices={1})
+    assert 'image_generation_content/0' in result.text
+    assert 'image_generation_content/1' not in result.text
+    assert result.image_markers == 1

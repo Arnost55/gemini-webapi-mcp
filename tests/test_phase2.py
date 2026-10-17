@@ -186,6 +186,9 @@ def test_streamable_http_tools_list_exposes_hotfix_contract(monkeypatch, tmp_pat
                     "gemini_delete_account",
                 } <= by_name.keys()
                 assert "outputSchema" not in by_name["gemini_generate_image"]
+                image_meta = by_name["gemini_generate_image"]["_meta"]
+                assert image_meta["ui"]["resourceUri"].startswith("ui://")
+                assert image_meta["openai/outputTemplate"] == image_meta["ui"]["resourceUri"]
                 for name in ("gemini_start_chat", "gemini_chat", "gemini_generate_image", "gemini_upload_file", "gemini_analyze_url"):
                     assert "thinking_level" in by_name[name]["inputSchema"]["properties"]
 
