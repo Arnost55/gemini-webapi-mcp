@@ -104,6 +104,26 @@ normal review:
 
 No production deployment was performed as part of Phase 5.3.
 
+## Phase 5.3.2 image viewer recovery
+
+The sandboxed image viewer now uses the MCP image block's validated `data:`
+URI directly for previews and gallery thumbnails. The previous Blob URL preview
+(`blob:null/...` in an opaque-origin iframe) could be rejected by a host CSP
+that permits `img-src data:` but not `blob:`. Download still passes the
+original bytes through the host's file-download bridge; it does not depend on
+the preview URL. Expanded viewing and gallery navigation share the same
+validated source, and broken image decodes surface an explicit error state.
+
+Regression coverage is in `tests/test_image_viewer_browser.py`. It runs a real
+Chromium browser in an opaque-origin sandbox with a data-only image CSP, across
+mobile and desktop viewports, and checks portrait, landscape, square, gallery,
+expanded navigation, download-byte fidelity, and decode failure behavior. Run
+it with `uv run --extra browser pytest -q tests/test_image_viewer_browser.py`
+after installing the project's browser test extra and configuring a local
+Chrome/Edge executable if needed. This verifies the local browser sandbox, not
+the ChatGPT Android renderer; client acceptance still requires a live client
+test.
+
 ## Rollback
 
 Redeploy commit `630da1e2725e0b0a79702269bad9fb888a1a5fc8` with the existing volume

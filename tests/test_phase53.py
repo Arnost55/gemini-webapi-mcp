@@ -61,7 +61,8 @@ def test_image_viewer_download_validates_and_saves_original_image_bytes():
     ):
         assert check in IMAGE_VIEWER_HTML
     assert "clipboard" not in IMAGE_VIEWER_HTML.lower()
-    assert "data:image/" not in IMAGE_VIEWER_HTML
+    assert "URL.createObjectURL" not in IMAGE_VIEWER_HTML
+    assert "data:${mime};base64,${data}" in IMAGE_VIEWER_HTML
     assert "storage_path" not in IMAGE_VIEWER_HTML
 
 
@@ -75,7 +76,7 @@ def test_image_viewer_height_measurement_and_letterboxing_are_transparent():
         "style.paddingBottom",
         "Math.abs(height-lastHeight)<2",
         "new ResizeObserver(scheduleHeight)",
-        'image.addEventListener("load",()=>{stage.classList.remove("loading");scheduleHeight()})',
+        'image.addEventListener("load",()=>{',
         'window.addEventListener("orientationchange",scheduleHeight',
     ):
         assert check in IMAGE_VIEWER_HTML

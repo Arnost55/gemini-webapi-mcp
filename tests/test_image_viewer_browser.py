@@ -1,0 +1,162 @@
+"""Browser regression tests for the image MCP App under a restrictive iframe CSP."""
+
+from __future__ import annotations
+
+import base64
+import html
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("playwright.sync_api")
+
+from PIL import Image
+from playwright._impl._errors import Error as PlaywrightError
+from playwright.sync_api import sync_playwright
+
+from gemini_webapi_mcp.image_viewer import IMAGE_VIEWER_HTML
+
+EDGE_PATHS = (
+    os.environ.get("GEMINI_VIEWER_TEST_BROWSER"),
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+)
+
+
+def _image_data(format_name: str, size: tuple[int, int], color: str) -> str:
+    image = Image.new("RGB", size, color)
+    from io import BytesIO
+
+    output = BytesIO()
+    image.save(output, format=format_name)
+    return base64.b64encode(output.getvalue()).decode("ascii")
+
+
+def _sandboxed_html(blocks: list[dict], viewer_html: str = IMAGE_VIEWER_HTML) -> str:
+    response = {
+        "content": [
+            {"type": "image", "mimeType": block["mime"], "data": block["data"]}
+            for block in blocks
+        ],
+        "structuredContent": {
+            "artifacts": [
+                {"filename": block["filename"], "width": block["width"], "height": block["height"]}
+                for block in blocks
+            ]
+        },
+    }
+    bridge = """<script>
+    window.__uploaded = null;
+    window.openai = {
+      toolOutput: __RESPONSE__,
+      uploadFile: async file => {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        parent.postMessage({kind:"saved-file", name:file.name, mime:file.type,
+          bytes:Array.from(bytes)}, "*");
+        return {fileId:"synthetic-test-file"};
+      },
+      getFileDownloadUrl: async () => ({downloadUrl:"https://example.invalid/test-image"}),
+      openExternal: async ({href}) => parent.postMessage({kind:"opened", href}, "*")
+    };
+    </script>""".replace("__RESPONSE__", json.dumps(response))
+    csp = (
+        "<meta http-equiv=\"Content-Security-Policy\" content=\""
+        "default-src 'none'; img-src data:; script-src 'unsafe-inline'; "
+        "style-src 'unsafe-inline'; connect-src 'none'; object-src 'none'\">"
+    )
+    return viewer_html.replace("<head>", f"<head>{csp}{bridge}", 1)
+
+
+def _launch_browser(playwright):
+    executable = next((path for path in EDGE_PATHS if path and Path(path).is_file()), None)
+    if executable is None:
+        pytest.skip("Install Playwright browser extra and set GEMINI_VIEWER_TEST_BROWSER to Chrome/Edge")
+    try:
+        return playwright.chromium.launch(headless=True, executable_path=executable)
+    except PlaywrightError as exc:
+        pytest.skip(f"Configured Chromium browser could not launch: {type(exc).__name__}")
+
+
+def _open_viewer(browser, blocks, viewport=(390, 844), color_scheme="light", viewer_html=IMAGE_VIEWER_HTML):
+    page = browser.new_page(viewport={"width": viewport[0], "height": viewport[1]}, color_scheme=color_scheme)
+    source = _sandboxed_html(blocks, viewer_html)
+    page.set_content(
+        "<script>window.__downloads=[];window.addEventListener('message',e=>window.__downloads.push(e.data))</script>"
+        "<iframe sandbox='allow-scripts' style='width:100%;height:100%;border:0' srcdoc=\""
+        + html.escape(source, quote=True)
+        + "\"></iframe>"
+    )
+    return page, page.frame_locator("iframe")
+
+
+def test_image_viewer_renders_gallery_and_expanded_images_under_data_only_csp():
+    blocks = [
+        {"mime": "image/png", "data": _image_data("PNG", (640, 960), "red"), "filename": "portrait.png", "width": 640, "height": 960},
+        {"mime": "image/jpeg", "data": _image_data("JPEG", (1200, 675), "green"), "filename": "landscape.jpg", "width": 1200, "height": 675},
+        {"mime": "image/webp", "data": _image_data("WEBP", (800, 800), "blue"), "filename": "square.webp", "width": 800, "height": 800},
+    ]
+    with sync_playwright() as playwright:
+        browser = _launch_browser(playwright)
+        try:
+            for viewport, theme in (((390, 844), "light"), ((1280, 900), "dark")):
+                page, viewer = _open_viewer(browser, blocks, viewport, theme)
+                main = viewer.locator("#image")
+                main.wait_for(state="visible")
+                main.evaluate("i => i.decode()")
+                assert main.evaluate("i => [i.complete, i.naturalWidth, i.naturalHeight]") == [True, 640, 960]
+                assert viewer.locator("#status").inner_text() == "3 generated images"
+                assert viewer.locator("#stage").evaluate("e => getComputedStyle(e).backgroundColor") == "rgba(0, 0, 0, 0)"
+                assert viewer.locator("body").evaluate("e => e.scrollHeight <= e.clientHeight")
+
+                viewer.get_by_role("button", name="Next image").click()
+                main.evaluate("i => i.decode()")
+                assert main.evaluate("i => [i.complete, i.naturalWidth, i.naturalHeight]") == [True, 1200, 675]
+                viewer.get_by_role("button", name="Next image").click()
+                main.evaluate("i => i.decode()")
+                assert main.evaluate("i => [i.complete, i.naturalWidth, i.naturalHeight]") == [True, 800, 800]
+
+                main.click()
+                expanded = viewer.locator("#expandedImage")
+                expanded.evaluate("i => i.decode()")
+                assert expanded.evaluate("i => [i.complete, i.naturalWidth, i.naturalHeight]") == [True, 800, 800]
+                viewer.get_by_role("button", name="Zoom in").click()
+                assert viewer.locator("#expandedImage").evaluate("i => i.style.transform") == "scale(1.25)"
+                viewer.locator("#expandedPrevious").click()
+                expanded.evaluate("i => i.decode()")
+                assert expanded.evaluate("i => [i.complete, i.naturalWidth, i.naturalHeight]") == [True, 1200, 675]
+                viewer.get_by_role("button", name="Close expanded image").click()
+                assert main.evaluate("i => [i.complete, i.naturalWidth, i.naturalHeight]") == [True, 1200, 675]
+
+                viewer.get_by_role("link", name="Download image").click()
+                page.wait_for_function("window.__downloads.some(x => x.kind === 'saved-file')")
+                downloaded = page.evaluate("window.__downloads.find(x => x.kind === 'saved-file')")
+                assert downloaded["name"] == "landscape.jpg"
+                assert downloaded["mime"] == "image/jpeg"
+                assert bytes(downloaded["bytes"]) == base64.b64decode(blocks[1]["data"])
+                assert main.evaluate("i => i.complete && i.naturalWidth === 1200")
+                page.close()
+            browser.close()
+        finally:
+            if browser.is_connected():
+                browser.close()
+
+
+def test_image_viewer_reports_actual_decode_failure():
+    invalid = {
+        "mime": "image/png",
+        "data": base64.b64encode(b"\x89PNG\r\n\x1a\nnot-a-decodable-image").decode("ascii"),
+        "filename": "broken.png",
+        "width": 1,
+        "height": 1,
+    }
+    with sync_playwright() as playwright:
+        browser = _launch_browser(playwright)
+        try:
+            _page, viewer = _open_viewer(browser, [invalid])
+            viewer.get_by_text("This image could not be displayed.").wait_for(state="visible")
+            assert viewer.locator("#image").evaluate("i => i.complete && i.naturalWidth === 0")
+            assert viewer.locator("#status").inner_text() == "Image unavailable"
+        finally:
+            browser.close()
