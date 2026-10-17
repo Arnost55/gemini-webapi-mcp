@@ -1,9 +1,11 @@
-# 1.0.0 candidate: release, deployment, and recovery
+# v1.0.0 release, deployment, and recovery
 
-This source tree is prepared as version `1.0.0`, but it is not an official
-stable release yet. The candidate has no `v1.0.0` tag, GitHub Release, or
-published container image. A user must confirm the new viewer in ChatGPT before
-stable publication. This change does not deploy to production.
+The `v1.0.0` tag points to source commit
+`69b205d1a24c7eaaab69b9e2ca1222f78a042952`. The tag-triggered GHCR workflow
+completed successfully, including pulling the immutable image and passing
+provenance and startup checks. This does not imply production deployment or
+user acceptance of the viewer in ChatGPT Android. GitHub Release-page status is
+separate and is not asserted here. Do not recreate or move the existing tag.
 
 ## Verified support and limitations
 
@@ -25,9 +27,9 @@ stable publication. This change does not deploy to production.
 
 ## Build and immutable deployment reference
 
-After reviewing and committing the candidate, obtain the full source commit SHA.
-Do not substitute `latest` when testing or deploying this revision. Before a
-version-tag workflow publishes an image, build the exact source locally:
+The published source commit is `69b205d1a24c7eaaab69b9e2ca1222f78a042952`.
+Do not substitute `latest` when testing or deploying this revision. To build
+the exact source locally:
 
 ```bash
 git checkout --detach <FULL_COMMIT_SHA>
@@ -37,8 +39,7 @@ docker build \
   -t gemini-webapi-mcp:sha-<FULL_COMMIT_SHA> .
 ```
 
-For a later, explicitly authorized version-tag release, the workflow publishes
-the semantic version and immutable commit tags, for example:
+The workflow publishes semantic-version and immutable commit tags, including:
 
 ```text
 ghcr.io/arnost55/gemini-webapi-mcp:1.0.0
@@ -53,9 +54,9 @@ reviewed HTTPS proxy. Preserve the unprivileged-container Chrome/seccomp
 requirements documented in [`install.md`](install.md); Docker runtime behavior
 must be validated on the target Proxmox host before a later deployment.
 
-No image for this candidate has been published by this change; do not pull the
-example tag until the authorized release workflow has completed and verified
-the baked commit/version metadata.
+The workflow has completed for the commit above. Re-check the Actions run and
+registry access before deployment; do not infer runtime compatibility with a
+particular Proxmox host from CI smoke tests.
 
 ## Backup and rollback
 

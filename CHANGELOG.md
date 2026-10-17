@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0 candidate — not yet released
+## [1.0.0] - 2026-10-17
 
 - Fixed MCP image viewer sizing in capped/sandboxed iframes; image fit now
   follows actual image and available viewport dimensions without distortion.
@@ -17,8 +17,10 @@
 - No Gemini video-generation MCP workflow or NotebookLM management/source/chat/
   Studio tools are claimed. Their protocols and account access remain unverified
   for safe consumer MCP integration.
-- No `v1.0.0` tag, GitHub Release, registry publication, or production deploy
-  has been made by this candidate change.
+- The `v1.0.0` tag exists and the tag-triggered GHCR workflow completed
+  successfully for source commit `69b205d1a24c7eaaab69b9e2ca1222f78a042952`.
+  No production deployment is implied. A GitHub Release page is a separate
+  publication step and is not claimed here.
 
 ## 0.2.0
 
