@@ -24,7 +24,7 @@ from gemini_webapi_mcp.video_viewer import (
 
 def test_image_viewer_has_responsive_gallery_and_real_host_actions():
     required = (
-        "width:100%;height:auto",
+        "width:auto;height:auto;max-width:100%;max-height:900px",
         "object-fit:contain",
         "ResizeObserver",
         "notifyIntrinsicHeight",
@@ -38,6 +38,51 @@ def test_image_viewer_has_responsive_gallery_and_real_host_actions():
         assert contract in IMAGE_VIEWER_HTML
     assert "http://" not in IMAGE_VIEWER_HTML
     assert "https://" not in IMAGE_VIEWER_HTML
+
+
+def test_image_viewer_download_validates_and_saves_original_image_bytes():
+    for mime, extension in (
+        ("image/png", ".png"),
+        ("image/jpeg", ".jpg"),
+        ("image/webp", ".webp"),
+    ):
+        assert f'"{mime}":"{extension}"' in IMAGE_VIEWER_HTML
+    for check in (
+        "allowedBase64.test(data)",
+        "MAX_IMAGE_BYTES=25*1024*1024",
+        "validSignature(bytes,mime)",
+        'new Blob([bytes],{type:mime})',
+        'new File([item.blob],item.filename,{type:item.mime})',
+        "bridge.uploadFile(file)",
+        "bridge.getFileDownloadUrl({fileId:uploaded.fileId})",
+        "bridge.openExternal({href:response.downloadUrl,redirectUrl:false})",
+        'link.href=item.url;link.download=item.filename',
+        "Could not download this image.",
+    ):
+        assert check in IMAGE_VIEWER_HTML
+    assert "clipboard" not in IMAGE_VIEWER_HTML.lower()
+    assert "data:image/" not in IMAGE_VIEWER_HTML
+    assert "storage_path" not in IMAGE_VIEWER_HTML
+
+
+def test_image_viewer_height_measurement_and_letterboxing_are_transparent():
+    for check in (
+        "#stage{position:relative",
+        "background:transparent",
+        "object-fit:contain",
+        "app.getBoundingClientRect()",
+        "rect.bottom+bottomPadding",
+        "style.paddingBottom",
+        "Math.abs(height-lastHeight)<2",
+        "new ResizeObserver(scheduleHeight)",
+        'image.addEventListener("load",()=>{stage.classList.remove("loading");scheduleHeight()})',
+        'window.addEventListener("orientationchange",scheduleHeight',
+    ):
+        assert check in IMAGE_VIEWER_HTML
+    assert "document.documentElement.scrollHeight" not in IMAGE_VIEWER_HTML
+    assert "width:fit-content;max-width:100%;min-height:180px" in IMAGE_VIEWER_HTML
+    assert "#stage.empty{width:100%}" in IMAGE_VIEWER_HTML
+    assert IMAGE_VIEWER_HTML.count("background:transparent") >= 3
 
 
 def test_image_widget_domain_is_opt_in_and_https_only(monkeypatch):

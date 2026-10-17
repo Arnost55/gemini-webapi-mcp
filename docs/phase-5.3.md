@@ -34,7 +34,21 @@ existing ChatGPT conversations remain compatible.
 The app reports bounded intrinsic-height changes after media load, viewport and
 orientation changes, selection changes, and expanded-mode changes. A
 `ResizeObserver` is disconnected on page exit, and animation-frame coalescing
-prevents resize loops.
+prevents resize loops. The report measures the app root's bottom edge plus the
+document's bottom padding, including any top offset from its first child; this
+avoids the small persistent iframe scrollbar caused by measuring root height
+alone.
+
+Downloads preserve the validated original PNG/JPEG/WebP bytes. In ChatGPT, the
+widget uses the documented `uploadFile` → `getFileDownloadUrl` → `openExternal`
+host flow when available. Other clients use a Blob URL and a normal download
+anchor; browser sandbox policy may block that fallback, so the viewer tells the
+user to use the host's image-save action if no download starts. It does not copy
+or display base64. The host flow successfully saved and Pillow-validated a PNG
+in a local sandboxed iframe harness. The direct-anchor fallback was also tried
+there and the sandbox blocked it, demonstrating why that path is only a
+best-effort fallback; the UI does not claim a confirmed save. The production
+ChatGPT widget was not changed or deployed for this verification.
 
 ## MCP App metadata and hosting
 
