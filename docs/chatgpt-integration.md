@@ -1,8 +1,11 @@
 # ChatGPT integration
 
-For the hosted service, configure ChatGPT's remote MCP connector with
-`https://gemini.proxmoxserver.dev/mcp` using Streamable HTTP. No local install,
-server, Docker, or registry-key setup is required. Complete the OAuth
+The hosted service is free to use and plug and play: no coding, local
+installation, server, Docker, or registry-key setup is required. Any fees or
+limits imposed by Google or your MCP client are separate. Configure ChatGPT's
+remote MCP connector with
+[`https://gemini.proxmoxserver.dev/mcp`](https://gemini.proxmoxserver.dev/mcp)
+using Streamable HTTP. Complete the OAuth
 authorization and PKCE flow, then separately complete Gemini Web sign-in via
 browser handoff. These first-use authorizations are required; MCP OAuth does
 not authenticate you to Google.

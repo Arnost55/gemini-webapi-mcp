@@ -6,8 +6,14 @@ changes can affect operation.
 
 ## Hosted service (no server setup)
 
+**Free to use and plug and play: no coding, local installation, Docker, or
+server setup required.** The hosted MCP service has no usage fee. Google
+account requirements and any fees or limits imposed by Google or your MCP
+client are separate.
+
 The project also provides a hosted MCP endpoint at
-`https://gemini.proxmoxserver.dev/mcp` using Streamable HTTP. For this option,
+[`https://gemini.proxmoxserver.dev/mcp`](https://gemini.proxmoxserver.dev/mcp)
+using Streamable HTTP. For this option,
 you do not need to install the package, run Docker, provision a server, or
 manage an encryption key. Add the endpoint to your remote MCP client, complete
 the MCP OAuth authorization, and then complete Google sign-in in the isolated

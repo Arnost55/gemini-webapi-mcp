@@ -15,12 +15,20 @@ account availability, and rate limits at any time.
 
 | Option | Best for | Setup |
 |---|---|---|
-| Hosted service | Trying the project without operating a server | Connect an MCP client to [`https://gemini.proxmoxserver.dev/mcp`](https://gemini.proxmoxserver.dev/mcp); complete MCP authorization and Google browser sign-in separately. The project operator hosts it on their own server. Account registry and durable OAuth state are encrypted; see the [security guide](docs/security.md). It is intended to be available most of the time, but has no 100% uptime guarantee and may be interrupted by crashes, maintenance, network issues, or upstream outages. |
+| Hosted service | Free, plug-and-play access | Connect your MCP client to [`https://gemini.proxmoxserver.dev/mcp`](https://gemini.proxmoxserver.dev/mcp). No coding, local installation, or server setup required. |
 | Local STDIO | A client and server on the same computer | Install with `uv`, then launch `gemini-webapi-mcp --transport stdio`. |
 | Self-hosted Streamable HTTP | A server used by remote MCP clients | Run the Compose example behind a reviewed HTTPS proxy or secure tunnel. |
 
 See the [documentation index](docs/README.md) for step-by-step setup, client
 compatibility, configuration, security, operations, and development guides.
+
+The hosted MCP service is free to use. The project operator runs it on their
+own server, with encrypted account registry and durable OAuth state; see the
+[security guide](docs/security.md). You still need an MCP client and a Google
+account with access to Gemini. Any fees or limits imposed by Google or your MCP
+client are separate. The service is intended to be up most of the time, but
+has no 100% uptime guarantee and may be interrupted by crashes, maintenance,
+network issues, or upstream outages.
 
 ## Local quick start
 
