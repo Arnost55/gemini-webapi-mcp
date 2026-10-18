@@ -1,12 +1,11 @@
 # Development
 
-Requirements: Python 3.10+ and `uv`. Install dependencies, run tests and lint,
-and build the package:
+Requirements: Python 3.10+ and `uv`. Install the development dependencies, run
+the test suite, and build the package:
 
 ```bash
 uv sync --group dev
 uv run pytest -q
-uv run ruff check .
 uv build
 git diff --check
 ```

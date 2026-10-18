@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Reworked the GitHub README around accurate Gemini Web authentication,
+  supported MCP features, client compatibility, and self-hosted Compose setup.
+- Added a navigable documentation index and contributor guide; documented the
+  verified feature boundaries without claiming video or NotebookLM workflows.
 - Fixed expanded image overlays persisting after the MCP host exits fullscreen;
   downloads in clients without a host bridge now use a Blob URL. Published the
   cache-busted `v4` viewer resource while retaining v1/v2/v3 compatibility.
