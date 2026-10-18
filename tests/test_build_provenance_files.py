@@ -24,6 +24,8 @@ def test_publish_workflow_passes_and_verifies_immutable_commit():
     assert 'tags: ["v*"]' in workflow
     assert "type=raw,value=latest" not in workflow
     assert "type=semver,pattern={{version}}" in workflow
-    assert "provenance: ${{ startsWith(github.ref, 'refs/tags/v') && 'mode=max' || 'false' }}" in workflow
-    assert "sbom: ${{ startsWith(github.ref, 'refs/tags/v') }}" in workflow
-    assert "push: ${{ startsWith(github.ref, 'refs/tags/v') }}" in workflow
+    assert "if: github.event_name != 'pull_request'" in workflow
+    assert "push: ${{ github.event_name != 'pull_request' }}" in workflow
+    assert "load: ${{ github.event_name == 'pull_request' }}" in workflow
+    assert "provenance: ${{ github.event_name != 'pull_request' && 'mode=max' || 'false' }}" in workflow
+    assert "sbom: ${{ github.event_name != 'pull_request' }}" in workflow
