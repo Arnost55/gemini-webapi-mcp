@@ -12,8 +12,12 @@ you do not need to install the package, run Docker, provision a server, or
 manage an encryption key. Add the endpoint to your remote MCP client, complete
 the MCP OAuth authorization, and then complete Google sign-in in the isolated
 browser handoff. Those authorization steps are still required; “no setup” means
-no user-managed server deployment. Hosted availability is managed by the
-operator and is not an uptime guarantee.
+no user-managed server deployment. The project operator hosts this service on
+their own server. The account registry and durable OAuth state are encrypted;
+see the [security guide](security.md) for the scope and key-handling details.
+The service is intended to be available most of the time, but there is no 100%
+uptime guarantee. Crashes, maintenance, network issues, and upstream outages
+can interrupt access.
 
 This hosted option is distinct from self-hosting. If you prefer to operate the
 server and its storage yourself, continue with [installation](installation.md).

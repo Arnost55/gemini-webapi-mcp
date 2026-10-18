@@ -7,6 +7,12 @@ authorization and PKCE flow, then separately complete Gemini Web sign-in via
 browser handoff. These first-use authorizations are required; MCP OAuth does
 not authenticate you to Google.
 
+The project operator hosts this endpoint on their own server. The account
+registry and durable OAuth state are encrypted; review the [security
+guide](security.md) for details. The hosted service is intended to be available
+most of the time, but has no 100% uptime guarantee and may be interrupted by
+crashes, maintenance, network issues, or upstream outages.
+
 To self-host instead, expose the server only behind HTTPS and configure the
 connector with `https://<your-host>/mcp`; the server's public origin must match
 `GEMINI_PUBLIC_URL`. Hosted availability depends on the operator, while a
