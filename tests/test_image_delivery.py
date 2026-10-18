@@ -222,6 +222,7 @@ def test_image_tool_advertises_private_mcp_app_and_resource_is_static():
     tool = next(item for item in tools if item.name == "gemini_generate_image")
     assert tool.meta["ui"]["resourceUri"] == IMAGE_VIEWER_URI
     assert tool.meta["openai/outputTemplate"] == IMAGE_VIEWER_URI
+    assert "display the returned image content directly" in tool.description
     resource = next(item for item in resources if str(item.uri) == IMAGE_VIEWER_URI)
     assert resource.mimeType == "text/html;profile=mcp-app"
     assert IMAGE_VIEWER_HTML in content[0].content

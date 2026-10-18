@@ -71,6 +71,7 @@ def normalize_response_text(
 
     filtered: list[str] = []
     image_markers = 0
+    protocol_image_ordinal = 0
     fence: str | None = None
     for line in lines:
         fence_match = _FENCE_LINE.match(line)
@@ -86,17 +87,24 @@ def normalize_response_text(
         src_match = None
         if element is not None and element.tag == "Image":
             src_match = _IMAGE_PROTOCOL_SRC.fullmatch(element.attrib.get("src", ""))
-        if (
+        is_protocol_image = (
             element is not None
             and element.tag == "Image"
             and len(element) == 0
             and not (element.text or "").strip()
             and not (set(element.attrib) - {"alt", "src"})
             and src_match is not None
-            and int(src_match.group("index")) in confirmed_indices
-        ):
+        )
+        # Gemini's image_generation_content path segment is an opaque asset
+        # identifier, not the zero-based image position (it can be a long
+        # numeric string). Match standalone protocol markers to successfully
+        # extracted images by their order in the response instead.
+        if is_protocol_image and protocol_image_ordinal in confirmed_indices:
             image_markers += 1
+            protocol_image_ordinal += 1
             continue
+        if is_protocol_image:
+            protocol_image_ordinal += 1
         filtered.append(line)
 
     lines = filtered

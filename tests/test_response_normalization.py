@@ -109,3 +109,15 @@ def test_removes_resolved_googleusercontent_marker_with_subdomain_and_query():
     result = normalize_response_text(text, extracted_image_indices={0})
     assert result.text.strip() == "ready"
     assert result.image_markers == 1
+
+
+def test_removes_opaque_gemini_asset_id_when_corresponding_image_was_extracted():
+    result = normalize_response_text(
+        'Here is your illustration.\n'
+        '<Image alt="A cute cat" '
+        'src="image_generation_content/13777303230345842378"/>\n',
+        extracted_image_indices={0},
+    )
+    assert result.text.strip() == "Here is your illustration."
+    assert "image_generation_content" not in result.text
+    assert result.image_markers == 1
