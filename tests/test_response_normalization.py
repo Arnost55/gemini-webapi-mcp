@@ -52,6 +52,24 @@ def test_extracts_supported_paired_follow_up_protocol():
     assert result.follow_ups[0].query == "Make another version"
 
 
+def test_extracts_gemini_nested_suggest_wrapper_after_answer():
+    result = normalize_response_text(
+        "Here is your illustration of a cute cat!  "
+        "<FollowUp> <Suggest>Would you like to change the cat's color?</Suggest> "
+        "</FollowUp>"
+    )
+    assert result.text == "Here is your illustration of a cute cat!"
+    assert result.follow_ups[0].query == "Would you like to change the cat's color?"
+    assert "<FollowUp>" not in result.text
+
+
+def test_preserves_nested_xml_that_is_not_the_supported_trailing_wrapper():
+    inline = "Literal XML: <FollowUp><Suggest>example</Suggest></FollowUp>"
+    fenced = "```xml\n<FollowUp><Suggest>example</Suggest></FollowUp>\n```"
+    assert normalize_response_text(inline).text == inline
+    assert normalize_response_text(fenced).text == fenced
+
+
 def test_preserves_literal_image_markup_when_not_a_separated_protocol_suffix():
     inline = 'The literal example is <Image src="sample"/>.'
     fenced = '```xml\n<Image src="sample"/>\n```\n'

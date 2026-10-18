@@ -12,19 +12,22 @@ uv run gemini-webapi-mcp --transport streamable-http --host 127.0.0.1 --port 800
 
 ## Image widget in Claude
 
-The image tool returns both native MCP image content and an MCP App resource.
-In Claude, the preview is an interactive connector widget; it is not guaranteed
-to appear as a second ordinary assistant chat bubble. The image tool's app uses
-the MCP Apps initialize/result/size-change bridge and keeps a native-image
-result for clients that do not render widgets.
+The image tool returns native MCP image content and an MCP App resource. The
+resource is linked to the tool using `_meta.ui.resourceUri` and uses the MCP App
+message bridge. Clients that support MCP Apps can render the interactive
+viewer; clients that do not should use the native image content.
 
-For Claude, enable the connector's interactive experience in the current
-conversation when that option is offered. If it still appears only as a tool
-result, start a fresh conversation and reconnect or re-enable the connector;
-Claude may cache the widget resource, so fully restart Claude Desktop after a
-widget update. These are client-side display and caching requirements, not
-evidence that the server generated no image. Anthropic documents interactive
-connectors and their troubleshooting in its
+Claude's chat-body presentation is controlled by Claude, not by the MCP server.
+Anthropic currently describes interactive connector experiences as a capability
+available to selected connectors; a connected custom MCP server is not thereby
+guaranteed to appear as an inline card. If Claude shows the generated image only
+inside the tool-result preview, the server cannot force that preview into a
+normal assistant chat message. Check Claude's current interactive-connector
+availability and whether this connector is eligible. Reconnecting or restarting
+can help after a resource update, but will not grant a connector capability that
+Claude does not expose. This UI limitation does not establish whether the server
+returned image bytes; inspect the tool result's native image content separately.
+Anthropic documents interactive connectors and their troubleshooting in its
 [Claude help article](https://support.claude.com/en/articles/13454812-use-interactive-connectors-in-claude)
 and [MCP app development guidance](https://github.com/anthropics/claude-plugins-official/blob/main/plugins/mcp-server-dev/skills/build-mcp-app/SKILL.md).
 The widget handshake follows the

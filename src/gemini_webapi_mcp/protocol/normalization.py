@@ -16,6 +16,11 @@ _IMAGE_PROTOCOL_SRC = re.compile(
     re.IGNORECASE,
 )
 _FENCE_LINE = re.compile(r"^[ \t]*(?P<fence>`{3,}|~{3,})")
+_TRAILING_SUGGESTION = re.compile(
+    r"(?P<prefix>.*?)(?:[ \t]{2,}|\r?\n[ \t]*)"
+    r"(?P<block><FollowUp\b[^<>]*>.*?</FollowUp>)[ \t\r\n]*$",
+    re.DOTALL,
+)
 
 
 @dataclass(frozen=True)
@@ -45,6 +50,38 @@ def _protocol_element(line: str):
         return None
 
 
+def _trailing_suggestion(text: str) -> tuple[str, FollowUp] | None:
+    """Recognize Gemini's exact nested, trailing Suggest wrapper only."""
+    match = _TRAILING_SUGGESTION.fullmatch(text)
+    if not match or not match.group("prefix").strip():
+        return None
+    try:
+        element = ElementTree.fromstring(match.group("block"))
+    except ElementTree.ParseError:
+        return None
+    if element.tag != "FollowUp" or set(element.attrib) - {"label", "query"}:
+        return None
+    if (element.text or "").strip() or len(element) != 1:
+        return None
+    suggestion = element[0]
+    if (
+        suggestion.tag != "Suggest"
+        or suggestion.attrib
+        or len(suggestion)
+        or (suggestion.tail or "").strip()
+    ):
+        return None
+    query = (suggestion.text or "").strip()
+    label = element.attrib.get("label", "").strip() or None
+    explicit_query = element.attrib.get("query", "").strip() or None
+    if not query and not explicit_query:
+        return None
+    return match.group("prefix").rstrip(), FollowUp(
+        label=label,
+        query=explicit_query or query,
+    )
+
+
 def normalize_response_text(
     text: str,
     *,
@@ -58,8 +95,23 @@ def normalize_response_text(
     corrupt code samples and quoted content. Image markers are therefore
     removed only when their numeric reference maps to an image that was
     successfully extracted, and never inside fenced code. Follow-ups remain
-    limited to a contiguous suffix of standalone lines after a blank line.
+    limited to known trailing protocol shapes: standalone follow-up lines or
+    Gemini's nested Suggest wrapper separated from prose by whitespace.
     """
+    nested_suggestion = _trailing_suggestion(text)
+    if nested_suggestion is not None:
+        prefix, follow_up = nested_suggestion
+        normalized = normalize_response_text(
+            prefix,
+            extracted_image_count=extracted_image_count,
+            extracted_image_indices=extracted_image_indices,
+        )
+        return NormalizedResponse(
+            text=normalized.text,
+            follow_ups=normalized.follow_ups + (follow_up,),
+            image_markers=normalized.image_markers,
+        )
+
     lines = text.splitlines(keepends=True)
     if not lines:
         return NormalizedResponse(text=text)
