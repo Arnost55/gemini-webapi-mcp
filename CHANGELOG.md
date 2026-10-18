@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fixed expanded image overlays persisting after the MCP host exits fullscreen;
+  downloads in clients without a host bridge now use a Blob URL. Published the
+  cache-busted `v4` viewer resource while retaining v1/v2/v3 compatibility.
 - Fixed a viewer height feedback loop that could collapse generated images to
   thumbnail size in initially short host iframes.
 - Moved download and fullscreen controls into an in-flow responsive toolbar,

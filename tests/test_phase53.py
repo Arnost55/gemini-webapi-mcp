@@ -7,6 +7,7 @@ from gemini_webapi_mcp.image_viewer import (
     IMAGE_VIEWER_HTML,
     IMAGE_VIEWER_URI,
     IMAGE_VIEWER_V1_URI,
+    IMAGE_VIEWER_V3_URI,
     LEGACY_IMAGE_VIEWER_URI,
     image_viewer_resource_meta,
 )
@@ -57,12 +58,13 @@ def test_image_viewer_download_validates_and_saves_original_image_bytes():
         "bridge.uploadFile(file)",
         "bridge.getFileDownloadUrl({fileId:uploaded.fileId})",
         "bridge.openExternal({href:response.downloadUrl,redirectUrl:false})",
-        'link.href=item.src;link.download=item.filename',
+        'link.download=item.filename',
+        'URL.createObjectURL(item.blob)',
         "Could not download this image.",
     ):
         assert check in IMAGE_VIEWER_HTML
     assert "clipboard" not in IMAGE_VIEWER_HTML.lower()
-    assert "URL.createObjectURL" not in IMAGE_VIEWER_HTML
+    assert "URL.revokeObjectURL(objectUrl)" in IMAGE_VIEWER_HTML
     assert "data:${mime};base64,${data}" in IMAGE_VIEWER_HTML
     assert "storage_path" not in IMAGE_VIEWER_HTML
 
@@ -114,6 +116,7 @@ def test_image_and_video_resources_are_registered_with_compatibility_uri():
     uris = {str(resource.uri) for resource in resources}
     assert {
         IMAGE_VIEWER_URI,
+        IMAGE_VIEWER_V3_URI,
         LEGACY_IMAGE_VIEWER_URI,
         IMAGE_VIEWER_V1_URI,
         VIDEO_VIEWER_URI,

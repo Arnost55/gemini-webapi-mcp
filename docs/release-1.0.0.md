@@ -76,7 +76,7 @@ database downgrade is not expected.
 ## Troubleshooting
 
 - **Image viewer still has scrollbars:** confirm the client resolved
-  `ui://gemini-webapi-mcp/image-result-v3.html` (the v1/v2 aliases are retained),
+  `ui://gemini-webapi-mcp/image-result-v4.html` (the v1/v2/v3 aliases are retained),
   refresh the MCP app resource cache, and capture the actual client viewport.
   Local Chromium verifies constrained iframe geometry but not ChatGPT's own
   layout host.

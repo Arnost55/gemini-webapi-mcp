@@ -37,6 +37,7 @@ from .image_viewer import (
     IMAGE_VIEWER_HTML,
     IMAGE_VIEWER_URI,
     IMAGE_VIEWER_V1_URI,
+    IMAGE_VIEWER_V3_URI,
     LEGACY_IMAGE_VIEWER_HTML,
     LEGACY_IMAGE_VIEWER_URI,
     image_viewer_resource_meta,
@@ -827,6 +828,19 @@ mcp = FastMCP("gemini-webapi-mcp", lifespan=app_lifespan)
 )
 def gemini_image_result_viewer() -> str:
     """Return a static viewer; image bytes arrive only in the tool result."""
+    return IMAGE_VIEWER_HTML
+
+
+@mcp.resource(
+    IMAGE_VIEWER_V3_URI,
+    name="gemini-image-result-viewer-v3",
+    title="Gemini image result (compatibility)",
+    description="Backward-compatible URI for cached Gemini image tool descriptors.",
+    mime_type="text/html;profile=mcp-app",
+    meta=image_viewer_resource_meta(),
+)
+def gemini_image_result_viewer_v3() -> str:
+    """Serve the current renderer at the previous resource URI."""
     return IMAGE_VIEWER_HTML
 
 

@@ -9,7 +9,7 @@ generation or consumer NotebookLM protocol that was not verified.
 | Area | State | Evidence boundary |
 | --- | --- | --- |
 | Gemini image generation | Supported | Existing account-scoped Gemini adapter |
-| Responsive image gallery | Supported | MCP App v3, with the v1/v2 URIs retained for cached descriptors |
+| Responsive image gallery | Supported | MCP App v4, with the v1/v2/v3 URIs retained for cached descriptors |
 | Gemini video in the browser | Observed | Existing authenticated result played as a 1280 x 720, ~10 s video |
 | Gemini video generation through MCP | Unsupported | The generation RPC, job identifier, state transitions, expiry, and cancellation protocol were not recovered |
 | Private video validation and MCP presentation | Implemented infrastructure | MP4/WebM validation, bounded account-private reads, embedded-resource delivery, and an HTML5 player |
@@ -23,13 +23,15 @@ return these states to clients without leaking account data.
 
 ## Image MCP App
 
-`ui://gemini-webapi-mcp/image-result-v3.html` preserves each artifact's natural
+`ui://gemini-webapi-mcp/image-result-v4.html` preserves each artifact's natural
 dimensions, uses `object-fit: contain`, and adapts to portrait, landscape, and
 square results. It includes a multi-image carousel, image count, keyboard
 navigation, download, zoom, and an expanded/fullscreen mode. Regenerate and
 edit call the real `gemini_generate_image` tool and preserve the conversation
-identifier for edits. The old v1 and v2 resource URIs serve the corrected
-renderer so existing ChatGPT conversations remain compatible.
+identifier for edits. The old v1, v2, and v3 resource URIs serve the corrected
+renderer so existing client conversations remain compatible. The viewer also
+collapses its local expanded overlay when the host reports a fullscreen-to-inline
+transition (for example, when the host's own close control exits fullscreen).
 
 The app reports bounded intrinsic-height changes after media load, viewport and
 orientation changes, selection changes, and expanded-mode changes. A

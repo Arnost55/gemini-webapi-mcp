@@ -92,9 +92,13 @@ def _open_viewer(
     viewer_html=IMAGE_VIEWER_HTML,
     frame_height=None,
     mcp_host=False,
+    allow_downloads=False,
+    include_openai=None,
 ):
     page = browser.new_page(viewport={"width": viewport[0], "height": viewport[1]}, color_scheme=color_scheme)
-    source = _sandboxed_html(blocks, viewer_html, include_openai=not mcp_host)
+    if include_openai is None:
+        include_openai = not mcp_host
+    source = _sandboxed_html(blocks, viewer_html, include_openai=include_openai)
     frame_height = frame_height or viewport[1]
     host = ""
     if mcp_host:
@@ -121,7 +125,10 @@ def _open_viewer(
               hostContext:{availableDisplayModes:['inline','fullscreen'],displayMode:'inline',theme:'light'}}},'*');
             if(message&&message.method==='ui/notifications/initialized')event.source.postMessage({jsonrpc:'2.0',method:'ui/notifications/tool-result',params:window.__hostResult},'*');
             if(message&&message.method==='tools/call')event.source.postMessage({jsonrpc:'2.0',id:message.id,result:window.__hostResult},'*');
-            if(message&&message.method==='ui/request-display-mode')event.source.postMessage({jsonrpc:'2.0',id:message.id,result:{mode:message.params.mode}},'*');
+            if(message&&message.method==='ui/request-display-mode'){
+              event.source.postMessage({jsonrpc:'2.0',id:message.id,result:{mode:message.params.mode}},'*');
+              event.source.postMessage({jsonrpc:'2.0',method:'ui/notifications/host-context-changed',params:{hostContext:{displayMode:message.params.mode}}},'*');
+            }
             if(message&&message.method==='ui/notifications/size-changed'){
               const frame=document.querySelector('iframe');
               if(frame&&Number(message.params&&message.params.height)>0)frame.style.height=`${message.params.height}px`;
@@ -130,12 +137,12 @@ def _open_viewer(
         </script>""".replace("__RESULT__", json.dumps(result))
     page.set_content(
         "<style>html,body{margin:0;width:100%;height:100%;overflow:hidden}iframe{display:block;width:100%;border:0}</style>"
-        "<script>window.__downloads=[];window.addEventListener('message',e=>{window.__downloads.push(e.data);"
+        "<script>window.__downloads=[];window.__hostNotifyContext=hostContext=>document.querySelector('iframe').contentWindow.postMessage({jsonrpc:'2.0',method:'ui/notifications/host-context-changed',params:{hostContext}},'*');window.addEventListener('message',e=>{window.__downloads.push(e.data);"
         "if(e.data&&e.data.kind==='intrinsic-height'){const f=document.querySelector('iframe');"
         "if(f&&Number(e.data.height)>0)f.style.height=`${e.data.height}px`;}})</script>"
         + host
         +
-        f"<iframe sandbox='allow-scripts' style='height:{frame_height}px' srcdoc=\""
+        f"<iframe sandbox='allow-scripts{' allow-downloads' if allow_downloads else ''}' style='height:{frame_height}px' srcdoc=\""
         + html.escape(source, quote=True)
         + "\"></iframe>"
     )
@@ -242,7 +249,36 @@ def test_image_viewer_uses_standard_mcp_apps_host_bridge_without_openai_globals(
             page.wait_for_function("window.__hostMessages.some(m => m.method === 'ui/request-display-mode')")
             display_request = page.evaluate("window.__hostMessages.find(m => m.method === 'ui/request-display-mode')")
             assert display_request["params"]["mode"] == "fullscreen"
+            viewer.locator("#expanded").wait_for(state="visible")
+            page.evaluate("window.__hostNotifyContext({displayMode:'inline'})")
+            viewer.locator("#expanded").wait_for(state="hidden")
+            assert viewer.locator("#expand").is_visible()
+            assert viewer.locator("body").evaluate("e => e.scrollHeight <= e.clientHeight")
             page.close()
+        finally:
+            browser.close()
+
+
+def test_image_viewer_downloads_blob_url_without_openai_bridge():
+    block = {
+        "mime": "image/png",
+        "data": _image_data("PNG", (320, 240), "orange"),
+        "filename": "fallback.png",
+        "width": 320,
+        "height": 240,
+    }
+    with sync_playwright() as playwright:
+        browser = _launch_browser(playwright)
+        try:
+            page, viewer = _open_viewer(browser, [block], mcp_host=True, allow_downloads=True)
+            viewer.locator("#image").wait_for(state="visible")
+            with page.expect_download() as download_info:
+                viewer.get_by_role("link", name="Download image").click()
+            download = download_info.value
+            assert download.suggested_filename == "fallback.png"
+            destination = Path(download.path())
+            assert destination.read_bytes() == base64.b64decode(block["data"])
+            assert viewer.locator("#status").inner_text().startswith("Download attempted:")
         finally:
             browser.close()
 

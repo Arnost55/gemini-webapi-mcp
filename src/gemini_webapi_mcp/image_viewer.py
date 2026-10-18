@@ -7,7 +7,8 @@ from urllib.parse import urlparse
 
 IMAGE_VIEWER_V1_URI = "ui://gemini-webapi-mcp/image-result-v1.html"
 LEGACY_IMAGE_VIEWER_URI = "ui://gemini-webapi-mcp/image-result-v2.html"
-IMAGE_VIEWER_URI = "ui://gemini-webapi-mcp/image-result-v3.html"
+IMAGE_VIEWER_V3_URI = "ui://gemini-webapi-mcp/image-result-v3.html"
+IMAGE_VIEWER_URI = "ui://gemini-webapi-mcp/image-result-v4.html"
 
 
 def image_viewer_resource_meta() -> dict:
@@ -232,9 +233,9 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offs
         if(typeof bridge.openExternal==="function")await bridge.openExternal({href:response.downloadUrl,redirectUrl:false});
         else{const link=document.createElement("a");link.href=response.downloadUrl;link.target="_blank";link.rel="noopener noreferrer";link.click()}
       }else{
-        const link=document.createElement("a");link.href=item.src;link.download=item.filename;link.rel="noopener";link.style.display="none";document.body.appendChild(link);link.click();link.remove();
+        const objectUrl=URL.createObjectURL(item.blob),link=document.createElement("a");link.href=objectUrl;link.download=item.filename;link.rel="noopener";link.style.display="none";document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(objectUrl),60000);
       }
-      status.textContent=`Download requested: ${item.filename}. If it did not start, use the host’s image save option.`;
+      status.textContent=`Download attempted: ${item.filename}. If it did not start, use the host’s image save option.`;
     }catch(_){status.textContent="Could not download this image. Try again or use the host’s image save option."}
     finally{download.removeAttribute("aria-busy");download.removeAttribute("aria-disabled");scheduleHeight()}
   }
@@ -257,6 +258,10 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offs
     expanded.hidden=true;setZoom(1);
     try{await requestDisplayMode("inline")}catch(_){}
     expand.focus();scheduleHeight();
+  }
+  function closeFromHost(){
+    if(expanded.hidden)return;
+    expanded.hidden=true;setZoom(1);expand.focus();scheduleHeight();
   }
 
   image.addEventListener("load",()=>{
@@ -289,7 +294,10 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offs
     }
     if(message.method==="ui/notifications/tool-result")render(message.params);
     else if(message.method==="ui/notifications/host-context-changed"){
-      mcpHostContext={...mcpHostContext,...(message.params&&message.params.hostContext||{})};scheduleHeight();
+      const previousMode=mcpHostContext.displayMode;
+      mcpHostContext={...mcpHostContext,...(message.params&&message.params.hostContext||{})};
+      if(previousMode==="fullscreen"&&mcpHostContext.displayMode==="inline")closeFromHost();
+      scheduleHeight();
     }else if(message.method==="ui/resource-teardown"&&message.id!==undefined){
       window.parent.postMessage({jsonrpc:"2.0",id:message.id,result:{}},"*");
     }
