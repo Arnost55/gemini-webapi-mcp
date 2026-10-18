@@ -42,6 +42,8 @@ jobs:
             type=sha,format=long
             type=semver,pattern={{version}}
             type=semver,pattern={{raw}}
+            type=raw,value=1.0,enable={{is_default_branch}}
+            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Resolve reproducible build provenance
         id: provenance

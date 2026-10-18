@@ -47,6 +47,11 @@ The `v1.0.0` workflow published image tags for source commit
 ghcr.io/arnost55/gemini-webapi-mcp:sha-69b205d1a24c7eaaab69b9e2ca1222f78a042952
 ```
 
+Pushes to `main` publish the immutable commit tag and update the moving
+`1.0` and `latest` aliases. Version tags such as `v1.0.0` publish `1.0.0`,
+`v1.0.0`, and the commit tag. Use `latest` for the newest main build, `1.0`
+for the current 1.0 line, or the full SHA tag when you need a reproducible pin.
+
 Pin that tag in Compose and preserve the current volume, encryption key, and
 environment when upgrading. See [release and recovery](release-1.0.0.md).
 

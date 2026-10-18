@@ -22,7 +22,8 @@ def test_publish_workflow_passes_and_verifies_immutable_commit():
     assert "http://127.0.0.1:18000/mcp" in workflow
     assert 'branches: [main]' in workflow
     assert 'tags: ["v*"]' in workflow
-    assert "type=raw,value=latest" not in workflow
+    assert "type=raw,value=latest,enable={{is_default_branch}}" in workflow
+    assert "type=raw,value=1.0,enable={{is_default_branch}}" in workflow
     assert "type=semver,pattern={{version}}" in workflow
     assert "if: github.event_name != 'pull_request'" in workflow
     assert "push: ${{ github.event_name != 'pull_request' }}" in workflow
