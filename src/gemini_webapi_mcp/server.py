@@ -2420,11 +2420,13 @@ async def gemini_generate_image(
     in the same conversation thread (e.g. "make it more dramatic", "add rain").
     You can also use a cid from the Gemini web URL (gemini.google.com/app/{cid}).
 
-    Images are returned as native MCP image content. Private storage paths are
-    deliberately omitted from user-visible and structured results. Clients
-    should display the returned image content directly in the conversation;
-    do not repeat Gemini's internal <Image ...> protocol marker as text or
-    offer a text/SVG substitute when an image block is present.
+    Images are returned as native MCP image content and an interactive MCP App
+    image preview/gallery for clients that support widgets. Private storage
+    paths are deliberately omitted from user-visible and structured results.
+    Clients without widget support should display the returned image content directly
+    in the conversation using the native image block; do not repeat Gemini's internal
+    <Image ...> protocol marker as text or offer a text/SVG substitute when an
+    image block is present.
 
     Args:
         prompt: Description of the image to generate, or editing instruction

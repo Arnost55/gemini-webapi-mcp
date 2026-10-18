@@ -34,7 +34,9 @@ def _image_data(format_name: str, size: tuple[int, int], color: str) -> str:
     return base64.b64encode(output.getvalue()).decode("ascii")
 
 
-def _sandboxed_html(blocks: list[dict], viewer_html: str = IMAGE_VIEWER_HTML) -> str:
+def _sandboxed_html(
+    blocks: list[dict], viewer_html: str = IMAGE_VIEWER_HTML, *, include_openai: bool = True
+) -> str:
     response = {
         "content": [
             {"type": "image", "mimeType": block["mime"], "data": block["data"]}
@@ -44,7 +46,9 @@ def _sandboxed_html(blocks: list[dict], viewer_html: str = IMAGE_VIEWER_HTML) ->
             "artifacts": [
                 {"filename": block["filename"], "width": block["width"], "height": block["height"]}
                 for block in blocks
-            ]
+            ],
+            "prompt": "a test image",
+            "conversation_id": ["test-conversation", "test-request"],
         },
     }
     bridge = """<script>
@@ -60,7 +64,7 @@ def _sandboxed_html(blocks: list[dict], viewer_html: str = IMAGE_VIEWER_HTML) ->
       getFileDownloadUrl: async () => ({downloadUrl:"https://example.invalid/test-image"}),
       openExternal: async ({href}) => parent.postMessage({kind:"opened", href}, "*")
     };
-    </script>""".replace("__RESPONSE__", json.dumps(response))
+    </script>""".replace("__RESPONSE__", json.dumps(response)) if include_openai else ""
     csp = (
         "<meta http-equiv=\"Content-Security-Policy\" content=\""
         "default-src 'none'; img-src data:; script-src 'unsafe-inline'; "
@@ -86,13 +90,44 @@ def _open_viewer(
     color_scheme="light",
     viewer_html=IMAGE_VIEWER_HTML,
     frame_height=None,
+    mcp_host=False,
 ):
     page = browser.new_page(viewport={"width": viewport[0], "height": viewport[1]}, color_scheme=color_scheme)
-    source = _sandboxed_html(blocks, viewer_html)
+    source = _sandboxed_html(blocks, viewer_html, include_openai=not mcp_host)
     frame_height = frame_height or viewport[1]
+    host = ""
+    if mcp_host:
+        result = {
+            "content": [
+                {"type": "image", "mimeType": block["mime"], "data": block["data"]}
+                for block in blocks
+            ],
+            "structuredContent": {
+                "artifacts": [
+                    {"filename": block["filename"], "width": block["width"], "height": block["height"]}
+                    for block in blocks
+                ],
+                "prompt": "a test image",
+                "conversation_id": ["test-conversation", "test-request"],
+            },
+        }
+        host = """<script>
+          window.__hostMessages=[];window.__hostResult=__RESULT__;
+          window.addEventListener('message',event=>{
+            const message=event.data;window.__hostMessages.push(message);
+            if(message&&message.method==='ui/initialize')event.source.postMessage({jsonrpc:'2.0',id:message.id,result:{
+              protocolVersion:'2026-01-26',hostCapabilities:{},hostInfo:{name:'test-host',version:'1'},
+              hostContext:{availableDisplayModes:['inline','fullscreen'],displayMode:'inline',theme:'light'}}},'*');
+            if(message&&message.method==='ui/notifications/initialized')event.source.postMessage({jsonrpc:'2.0',method:'ui/notifications/tool-result',params:window.__hostResult},'*');
+            if(message&&message.method==='tools/call')event.source.postMessage({jsonrpc:'2.0',id:message.id,result:window.__hostResult},'*');
+            if(message&&message.method==='ui/request-display-mode')event.source.postMessage({jsonrpc:'2.0',id:message.id,result:{mode:message.params.mode}},'*');
+          });
+        </script>""".replace("__RESULT__", json.dumps(result))
     page.set_content(
         "<style>html,body{margin:0;width:100%;height:100%;overflow:hidden}iframe{display:block;width:100%;border:0}</style>"
         "<script>window.__downloads=[];window.addEventListener('message',e=>window.__downloads.push(e.data))</script>"
+        + host
+        +
         f"<iframe sandbox='allow-scripts' style='height:{frame_height}px' srcdoc=\""
         + html.escape(source, quote=True)
         + "\"></iframe>"
@@ -167,6 +202,40 @@ def test_image_viewer_reports_actual_decode_failure():
             viewer.get_by_text("This image could not be displayed.").wait_for(state="visible")
             assert viewer.locator("#image").evaluate("i => i.complete && i.naturalWidth === 0")
             assert viewer.locator("#status").inner_text() == "Image unavailable"
+        finally:
+            browser.close()
+
+
+def test_image_viewer_uses_standard_mcp_apps_host_bridge_without_openai_globals():
+    block = {
+        "mime": "image/png",
+        "data": _image_data("PNG", (960, 540), "purple"),
+        "filename": "mcp-app.png",
+        "width": 960,
+        "height": 540,
+    }
+    with sync_playwright() as playwright:
+        browser = _launch_browser(playwright)
+        try:
+            page, viewer = _open_viewer(browser, [block], mcp_host=True)
+            image = viewer.locator("#image")
+            image.wait_for(state="visible")
+            image.evaluate("item => item.decode()")
+            page.wait_for_function("window.__hostMessages.some(m => m.method === 'ui/notifications/initialized')")
+            page.wait_for_function("window.__hostMessages.some(m => m.method === 'ui/notifications/size-changed')")
+            assert viewer.locator("#image").evaluate("item => [item.naturalWidth,item.naturalHeight]") == [960, 540]
+
+            viewer.get_by_role("button", name="Regenerate").click()
+            page.wait_for_function("window.__hostMessages.some(m => m.method === 'tools/call')")
+            tool_call = page.evaluate("window.__hostMessages.find(m => m.method === 'tools/call')")
+            assert tool_call["params"]["name"] == "gemini_generate_image"
+            assert tool_call["params"]["arguments"]["prompt"] == "a test image"
+
+            viewer.locator("#expand").click()
+            page.wait_for_function("window.__hostMessages.some(m => m.method === 'ui/request-display-mode')")
+            display_request = page.evaluate("window.__hostMessages.find(m => m.method === 'ui/request-display-mode')")
+            assert display_request["params"]["mode"] == "fullscreen"
+            page.close()
         finally:
             browser.close()
 

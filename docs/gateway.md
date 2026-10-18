@@ -10,6 +10,26 @@ uv run gemini-webapi-mcp --transport stdio
 uv run gemini-webapi-mcp --transport streamable-http --host 127.0.0.1 --port 8000
 ```
 
+## Image widget in Claude
+
+The image tool returns both native MCP image content and an MCP App resource.
+In Claude, the preview is an interactive connector widget; it is not guaranteed
+to appear as a second ordinary assistant chat bubble. The image tool's app uses
+the MCP Apps initialize/result/size-change bridge and keeps a native-image
+result for clients that do not render widgets.
+
+For Claude, enable the connector's interactive experience in the current
+conversation when that option is offered. If it still appears only as a tool
+result, start a fresh conversation and reconnect or re-enable the connector;
+Claude may cache the widget resource, so fully restart Claude Desktop after a
+widget update. These are client-side display and caching requirements, not
+evidence that the server generated no image. Anthropic documents interactive
+connectors and their troubleshooting in its
+[Claude help article](https://support.claude.com/en/articles/13454812-use-interactive-connectors-in-claude)
+and [MCP app development guidance](https://github.com/anthropics/claude-plugins-official/blob/main/plugins/mcp-server-dev/skills/build-mcp-app/SKILL.md).
+The widget handshake follows the
+[MCP Apps specification](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx).
+
 Expose the HTTP listener only through an authenticated HTTPS reverse proxy or a
 trusted MCP tunnel. Do not bind it to `0.0.0.0` directly on the public network.
 The MCP SDK handles the Streamable HTTP protocol; the gateway must preserve

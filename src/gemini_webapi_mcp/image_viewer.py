@@ -112,7 +112,30 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offs
 (()=>{
   const $=id=>document.getElementById(id),app=$("app"),status=$("status"),stage=$("stage"),image=$("image"),error=$("error"),galleryNav=$("galleryNav"),thumbs=$("thumbs"),counter=$("counter"),download=$("download"),expand=$("expand"),actions=$("actions"),expanded=$("expanded"),expandedImage=$("expandedImage"),zoomReset=$("zoomReset");
   const MIME_EXT={"image/png":".png","image/jpeg":".jpg","image/webp":".webp"},allowedBase64=/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/,MAX_IMAGE_BYTES=25*1024*1024;
-  let items=[],selected=0,metadata={},lastHeight=0,resizeFrame=0,scale=1;
+  let items=[],selected=0,metadata={},lastHeight=0,lastWidth=0,resizeFrame=0,scale=1;
+  let mcpReady=false,mcpHostContext={},nextRpcId=1;
+  const pendingRequests=new Map();
+
+  function hostRequest(method,params={}){
+    if(!mcpReady)return Promise.reject(new Error("MCP App host is not ready"));
+    const id=`gemini-image-${nextRpcId++}`;
+    return new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>{pendingRequests.delete(id);reject(new Error("MCP App host request timed out"))},8000);
+      pendingRequests.set(id,{resolve,reject,timer});
+      window.parent.postMessage({jsonrpc:"2.0",id,method,params},"*");
+    });
+  }
+  function hostNotification(method,params={}){
+    if(mcpReady)window.parent.postMessage({jsonrpc:"2.0",method,params},"*");
+  }
+  function requestDisplayMode(mode){
+    if(mcpReady&&Array.isArray(mcpHostContext.availableDisplayModes)&&mcpHostContext.availableDisplayModes.includes(mode))return hostRequest("ui/request-display-mode",{mode});
+    if(window.openai&&typeof window.openai.requestDisplayMode==="function"){
+      if(mode==="fullscreen")return window.openai.requestDisplayMode({mode:"fullscreen"});
+      return window.openai.requestDisplayMode({mode});
+    }
+    return Promise.resolve(null);
+  }
 
   function envelope(v){return!v||typeof v!=="object"?null:v.mcp_tool_result||v.mcpToolResult||v.call_tool_result||v.callToolResult||v.result||v}
   function fitInlineImage(){
@@ -142,9 +165,13 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offs
     fitExpandedImage();
     const style=getComputedStyle(document.body),bottomPadding=parseFloat(style.paddingBottom)||0,rect=app.getBoundingClientRect();
     const height=Math.max(80,Math.min(2400,Math.ceil(rect.bottom+bottomPadding)));
-    if(Math.abs(height-lastHeight)<2)return;
-    lastHeight=height;
-    if(window.openai&&typeof window.openai.notifyIntrinsicHeight==="function")try{window.openai.notifyIntrinsicHeight(height)}catch(_){}
+    const width=Math.max(1,Math.ceil(document.documentElement.clientWidth));
+    const widthChanged=Math.abs(width-lastWidth)>=2;
+    if(Math.abs(height-lastHeight)<2&&!widthChanged)return;
+    const heightChanged=Math.abs(height-lastHeight)>=2;
+    lastHeight=height;lastWidth=width;
+    if(heightChanged||widthChanged)hostNotification("ui/notifications/size-changed",{width,height});
+    if(heightChanged&&window.openai&&typeof window.openai.notifyIntrinsicHeight==="function")try{window.openai.notifyIntrinsicHeight(height)}catch(_){}
   }
   function scheduleHeight(){if(resizeFrame)return;resizeFrame=requestAnimationFrame(reportHeight)}
   function dimensions(index){const a=Array.isArray(metadata.artifacts)?metadata.artifacts[index]:null,w=Number(a&&a.width),h=Number(a&&a.height);return w>0&&h>0?{w,h}:null}
@@ -223,18 +250,22 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offs
   }
   function setZoom(value){scale=Math.max(.5,Math.min(4,value));expandedImage.style.transform=`scale(${scale})`;expandedImage.parentElement.classList.toggle("zoomed",scale>1);zoomReset.textContent=scale===1?"Fit":`${Math.round(scale*100)}%`;scheduleHeight()}
   async function callTool(prompt,conversationId){
-    if(!prompt||!window.openai||typeof window.openai.callTool!=="function"){status.textContent="Image actions are unavailable in this client.";return}
+    if(!prompt||(!mcpReady&&(!window.openai||typeof window.openai.callTool!=="function"))){status.textContent="Image actions are unavailable in this client.";return}
     const args={prompt};if(conversationId)args.conversation_id=conversationId;
-    try{status.textContent="Starting image generation…";await window.openai.callTool("gemini_generate_image",args)}catch(_){status.textContent="Could not start image generation from this client."}scheduleHeight();
+    try{
+      status.textContent="Starting image generation…";
+      if(mcpReady){const result=await hostRequest("tools/call",{name:"gemini_generate_image",arguments:args});render(result)}
+      else await window.openai.callTool("gemini_generate_image",args);
+    }catch(_){status.textContent="Could not start image generation from this client."}scheduleHeight();
   }
   async function openExpanded(){
     if(!items.length||image.hidden||!image.complete||!image.naturalWidth||!image.naturalHeight)return;expandedImage.src=image.currentSrc||items[selected].src;setZoom(1);
-    if(window.openai&&typeof window.openai.requestDisplayMode==="function")try{await window.openai.requestDisplayMode({mode:"fullscreen"})}catch(_){}
+    try{await requestDisplayMode("fullscreen")}catch(_){}
     expanded.hidden=false;fitExpandedImage();$("close").focus();scheduleHeight();
   }
   async function closeExpanded(){
     expanded.hidden=true;setZoom(1);
-    if(window.openai&&typeof window.openai.requestDisplayMode==="function")try{await window.openai.requestDisplayMode({mode:"inline"})}catch(_){}
+    try{await requestDisplayMode("inline")}catch(_){}
     expand.focus();scheduleHeight();
   }
 
@@ -258,7 +289,34 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offs
   document.addEventListener("keydown",event=>{if(event.key==="Escape"&&!expanded.hidden)closeExpanded();else if(event.key==="ArrowLeft"&&items.length>1)select(selected-1);else if(event.key==="ArrowRight"&&items.length>1)select(selected+1)});
   render(window.openai&&(window.openai.toolResponseMetadata||window.openai.toolOutput));
   window.addEventListener("openai:set_globals",event=>{const globals=event.detail&&event.detail.globals;if(globals)render(globals.toolResponseMetadata||globals.toolOutput)});
-  window.addEventListener("message",event=>{if(event.data&&event.data.method==="ui/notifications/tool-result")render(event.data.params)});
+  window.addEventListener("message",event=>{
+    if(event.source!==window.parent||!event.data||typeof event.data!=="object")return;
+    const message=event.data;
+    if(message.id!==undefined&&pendingRequests.has(String(message.id))){
+      const pending=pendingRequests.get(String(message.id));pendingRequests.delete(String(message.id));clearTimeout(pending.timer);
+      if(message.error)pending.reject(new Error("MCP App host request failed"));else pending.resolve(message.result);
+      return;
+    }
+    if(message.method==="ui/notifications/tool-result")render(message.params);
+    else if(message.method==="ui/notifications/host-context-changed"){
+      mcpHostContext={...mcpHostContext,...(message.params&&message.params.hostContext||{})};scheduleHeight();
+    }else if(message.method==="ui/resource-teardown"&&message.id!==undefined){
+      window.parent.postMessage({jsonrpc:"2.0",id:message.id,result:{}},"*");
+    }
+  });
+  if(window.parent!==window){
+    const initializeId=`gemini-image-${nextRpcId++}`;
+    const initTimer=setTimeout(()=>pendingRequests.delete(initializeId),8000);
+    pendingRequests.set(initializeId,{timer:initTimer,resolve:result=>{
+      mcpReady=true;mcpHostContext=result&&result.hostContext||{};
+      hostNotification("ui/notifications/initialized",{});scheduleHeight();
+    },reject:()=>{}});
+    window.parent.postMessage({jsonrpc:"2.0",id:initializeId,method:"ui/initialize",params:{
+      appInfo:{name:"gemini-webapi-mcp-image-viewer",version:"1.0.0"},
+      appCapabilities:{availableDisplayModes:["inline","fullscreen"]},
+      protocolVersion:"2026-01-26"
+    }},"*");
+  }
   const observer=new ResizeObserver(scheduleHeight);observer.observe(app);
   window.addEventListener("resize",scheduleHeight,{passive:true});window.addEventListener("orientationchange",scheduleHeight,{passive:true});
   window.addEventListener("pagehide",()=>{observer.disconnect();cancelAnimationFrame(resizeFrame);clearItems()},{once:true});scheduleHeight();
