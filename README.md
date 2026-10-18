@@ -27,7 +27,7 @@ An MCP server for Gemini Web chat, file analysis, image generation, and account-
 | Gemini video generation | Not implemented as an MCP workflow. Browser observation and a validated-media player component do not constitute generation or retrieval support |
 | NotebookLM | Capability report only. Notebook management, source upload, grounded chat, and Studio generation are unsupported |
 
-The image and video UI resources are `ui://gemini-webapi-mcp/image-result-v2.html` (with v1 compatibility) and `ui://gemini-webapi-mcp/video-result-v1.html`. Video artifacts can be validated and represented privately, but no tool currently generates them. No genuine, authorized ChatGPT screenshot is included in this repository; add one only after obtaining and reviewing an actual capture.
+The image and video UI resources are `ui://gemini-webapi-mcp/image-result-v3.html` (with v1/v2 compatibility) and `ui://gemini-webapi-mcp/video-result-v1.html`. Video artifacts can be validated and represented privately, but no tool currently generates them. No genuine, authorized ChatGPT screenshot is included in this repository; add one only after obtaining and reviewing an actual capture.
 
 ## Quick start
 

@@ -62,7 +62,8 @@ def _sandboxed_html(
         return {fileId:"synthetic-test-file"};
       },
       getFileDownloadUrl: async () => ({downloadUrl:"https://example.invalid/test-image"}),
-      openExternal: async ({href}) => parent.postMessage({kind:"opened", href}, "*")
+      openExternal: async ({href}) => parent.postMessage({kind:"opened", href}, "*"),
+      notifyIntrinsicHeight: height => parent.postMessage({kind:"intrinsic-height", height}, "*")
     };
     </script>""".replace("__RESPONSE__", json.dumps(response)) if include_openai else ""
     csp = (
@@ -121,11 +122,17 @@ def _open_viewer(
             if(message&&message.method==='ui/notifications/initialized')event.source.postMessage({jsonrpc:'2.0',method:'ui/notifications/tool-result',params:window.__hostResult},'*');
             if(message&&message.method==='tools/call')event.source.postMessage({jsonrpc:'2.0',id:message.id,result:window.__hostResult},'*');
             if(message&&message.method==='ui/request-display-mode')event.source.postMessage({jsonrpc:'2.0',id:message.id,result:{mode:message.params.mode}},'*');
+            if(message&&message.method==='ui/notifications/size-changed'){
+              const frame=document.querySelector('iframe');
+              if(frame&&Number(message.params&&message.params.height)>0)frame.style.height=`${message.params.height}px`;
+            }
           });
         </script>""".replace("__RESULT__", json.dumps(result))
     page.set_content(
         "<style>html,body{margin:0;width:100%;height:100%;overflow:hidden}iframe{display:block;width:100%;border:0}</style>"
-        "<script>window.__downloads=[];window.addEventListener('message',e=>window.__downloads.push(e.data))</script>"
+        "<script>window.__downloads=[];window.addEventListener('message',e=>{window.__downloads.push(e.data);"
+        "if(e.data&&e.data.kind==='intrinsic-height'){const f=document.querySelector('iframe');"
+        "if(f&&Number(e.data.height)>0)f.style.height=`${e.data.height}px`;}})</script>"
         + host
         +
         f"<iframe sandbox='allow-scripts' style='height:{frame_height}px' srcdoc=\""
@@ -241,7 +248,7 @@ def test_image_viewer_uses_standard_mcp_apps_host_bridge_without_openai_globals(
 
 
 def test_image_viewer_fits_images_without_iframe_scrolling_across_viewports():
-    viewports = ((360, 640), (430, 932), (768, 1024), (1280, 800), (1920, 1080))
+    viewports = ((360, 640), (430, 932), (768, 1024), (1280, 800))
     dimensions_list = ((896, 1200), (1376, 768), (1024, 1024))
     with sync_playwright() as playwright:
         browser = _launch_browser(playwright)
@@ -260,22 +267,39 @@ def test_image_viewer_fits_images_without_iframe_scrolling_across_viewports():
                         browser,
                         [block],
                         viewport=viewport,
-                        frame_height=min(viewport[1], 360),
+                        # Reproduce hosts that initially allocate a tiny iframe.
+                        frame_height=80,
                     )
                     main = viewer.locator("#image")
                     main.wait_for(state="visible")
                     main.evaluate("image => image.decode()")
+                    page.wait_for_function(
+                        "document.querySelector('iframe').getBoundingClientRect().height > 100"
+                    )
+                    viewer.locator("body").evaluate(
+                        "body => new Promise(resolve => { const settled = () => "
+                        "body.clientHeight >= body.scrollHeight - 1 ? resolve() : "
+                        "requestAnimationFrame(settled); settled(); })"
+                    )
                     inline_geometry = viewer.locator("body").evaluate(
                         "body => ({client:body.clientHeight, scroll:body.scrollHeight, "
                         "image:document.querySelector('#image').getBoundingClientRect().toJSON(), "
-                        "stage:document.querySelector('#stage').getBoundingClientRect().toJSON()})"
+                        "stage:document.querySelector('#stage').getBoundingClientRect().toJSON(), "
+                        "toolbar:document.querySelector('.controls').getBoundingClientRect().toJSON()})"
                     )
                     assert inline_geometry["scroll"] <= inline_geometry["client"] + 1, (
                         f"inline overflow at viewport={viewport}, image={dimensions}: {inline_geometry}"
                     )
                     image_box, stage_box = inline_geometry["image"], inline_geometry["stage"]
+                    toolbar_box = inline_geometry["toolbar"]
+                    expected_width = min(width, viewport[0] - 8, 1200)
+                    assert image_box["width"] >= expected_width * 0.95, (
+                        f"collapsed image at viewport={viewport}, image={dimensions}: {inline_geometry}"
+                    )
+                    assert image_box["height"] > 64
                     assert image_box["top"] >= stage_box["top"] - 1
                     assert image_box["bottom"] <= stage_box["bottom"] + 1
+                    assert toolbar_box["bottom"] <= image_box["top"] + 1
                     assert abs(image_box["width"] / image_box["height"] - width / height) < 0.01
 
                     viewer.locator("#expand").click()

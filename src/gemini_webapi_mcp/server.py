@@ -36,6 +36,7 @@ from .build_info import build_provenance
 from .image_viewer import (
     IMAGE_VIEWER_HTML,
     IMAGE_VIEWER_URI,
+    IMAGE_VIEWER_V1_URI,
     LEGACY_IMAGE_VIEWER_HTML,
     LEGACY_IMAGE_VIEWER_URI,
     image_viewer_resource_meta,
@@ -831,14 +832,27 @@ def gemini_image_result_viewer() -> str:
 
 @mcp.resource(
     LEGACY_IMAGE_VIEWER_URI,
-    name="gemini-image-result-viewer-v1",
+    name="gemini-image-result-viewer-v2",
     title="Gemini image result (compatibility)",
     description="Backward-compatible URI for cached Gemini image tool descriptors.",
     mime_type="text/html;profile=mcp-app",
     meta=image_viewer_resource_meta(),
 )
-def gemini_image_result_viewer_v1() -> str:
-    """Serve the corrected renderer at the legacy resource URI."""
+def gemini_image_result_viewer_v2() -> str:
+    """Serve the corrected renderer at the previous resource URI."""
+    return LEGACY_IMAGE_VIEWER_HTML
+
+
+@mcp.resource(
+    IMAGE_VIEWER_V1_URI,
+    name="gemini-image-result-viewer-v1",
+    title="Gemini image result (oldest compatibility)",
+    description="Backward-compatible URI for the original cached image viewer descriptor.",
+    mime_type="text/html;profile=mcp-app",
+    meta=image_viewer_resource_meta(),
+)
+def gemini_image_result_viewer_oldest() -> str:
+    """Serve the corrected renderer at the original resource URI."""
     return LEGACY_IMAGE_VIEWER_HTML
 
 

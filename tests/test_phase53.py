@@ -6,6 +6,7 @@ import pytest
 from gemini_webapi_mcp.image_viewer import (
     IMAGE_VIEWER_HTML,
     IMAGE_VIEWER_URI,
+    IMAGE_VIEWER_V1_URI,
     LEGACY_IMAGE_VIEWER_URI,
     image_viewer_resource_meta,
 )
@@ -24,7 +25,7 @@ from gemini_webapi_mcp.video_viewer import (
 
 def test_image_viewer_has_responsive_gallery_and_real_host_actions():
     required = (
-        "width:auto;height:auto;max-width:100%;max-height:min(900px,calc(100vh - 160px))",
+        "width:auto;height:auto;max-width:100%;object-fit:contain",
         "object-fit:contain",
         "ResizeObserver",
         "notifyIntrinsicHeight",
@@ -56,7 +57,7 @@ def test_image_viewer_download_validates_and_saves_original_image_bytes():
         "bridge.uploadFile(file)",
         "bridge.getFileDownloadUrl({fileId:uploaded.fileId})",
         "bridge.openExternal({href:response.downloadUrl,redirectUrl:false})",
-        'link.href=item.url;link.download=item.filename',
+        'link.href=item.src;link.download=item.filename',
         "Could not download this image.",
     ):
         assert check in IMAGE_VIEWER_HTML
@@ -81,9 +82,11 @@ def test_image_viewer_height_measurement_and_letterboxing_are_transparent():
     ):
         assert check in IMAGE_VIEWER_HTML
     assert "document.documentElement.scrollHeight" not in IMAGE_VIEWER_HTML
-    assert "width:fit-content;max-width:100%;min-height:0" in IMAGE_VIEWER_HTML
+    assert "width:fit-content;max-width:min(100%,1200px);min-height:0" in IMAGE_VIEWER_HTML
     assert "#stage.empty{min-height:clamp(180px,40vw,320px)}" in IMAGE_VIEWER_HTML
-    assert "function fitInlineImage()" in IMAGE_VIEWER_HTML
+    assert "function fitInlineImage()" not in IMAGE_VIEWER_HTML
+    assert "window.innerHeight-bodySpace" not in IMAGE_VIEWER_HTML
+    assert ".controls{position:relative" in IMAGE_VIEWER_HTML
     assert "function fitExpandedImage()" in IMAGE_VIEWER_HTML
     assert "#stage.empty{width:100%}" in IMAGE_VIEWER_HTML
     assert IMAGE_VIEWER_HTML.count("background:transparent") >= 3
@@ -109,7 +112,12 @@ def test_image_and_video_resources_are_registered_with_compatibility_uri():
 
     resources, video = asyncio.run(inspect())
     uris = {str(resource.uri) for resource in resources}
-    assert {IMAGE_VIEWER_URI, LEGACY_IMAGE_VIEWER_URI, VIDEO_VIEWER_URI} <= uris
+    assert {
+        IMAGE_VIEWER_URI,
+        LEGACY_IMAGE_VIEWER_URI,
+        IMAGE_VIEWER_V1_URI,
+        VIDEO_VIEWER_URI,
+    } <= uris
     assert VIDEO_VIEWER_HTML in video[0].content
 
 

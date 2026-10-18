@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fixed a viewer height feedback loop that could collapse generated images to
+  thumbnail size in initially short host iframes.
+- Moved download and fullscreen controls into an in-flow responsive toolbar,
+  preserved width-driven natural image sizing, and published a cache-busting
+  `v3` viewer resource while retaining the `v1` and `v2` compatibility URIs.
 - Documented the standards-first image delivery contract and a client
   compatibility matrix that separates protocol receipt from UI rendering.
 - Added host-profile regression coverage proving native image blocks remain
