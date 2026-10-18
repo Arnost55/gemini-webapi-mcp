@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Documented the standards-first image delivery contract and a client
+  compatibility matrix that separates protocol receipt from UI rendering.
+- Added host-profile regression coverage proving native image blocks remain
+  available when clients ignore MCP Apps metadata or structured results.
+- Declared MCP App tool visibility explicitly without making the viewer a
+  dependency of image generation.
+
 ## [1.0.0] - 2026-10-17
 
 - Fixed MCP image viewer sizing in capped/sandboxed iframes; image fit now

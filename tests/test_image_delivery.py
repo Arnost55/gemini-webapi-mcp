@@ -221,6 +221,7 @@ def test_image_tool_advertises_private_mcp_app_and_resource_is_static():
     tools, resources, content = asyncio.run(inspect_registration())
     tool = next(item for item in tools if item.name == "gemini_generate_image")
     assert tool.meta["ui"]["resourceUri"] == IMAGE_VIEWER_URI
+    assert tool.meta["ui"]["visibility"] == ["model", "app"]
     assert tool.meta["openai/outputTemplate"] == IMAGE_VIEWER_URI
     assert "display the returned image content directly" in tool.description
     resource = next(item for item in resources if str(item.uri) == IMAGE_VIEWER_URI)
@@ -228,6 +229,45 @@ def test_image_tool_advertises_private_mcp_app_and_resource_is_static():
     assert IMAGE_VIEWER_HTML in content[0].content
     assert "http://" not in IMAGE_VIEWER_HTML
     assert "https://" not in IMAGE_VIEWER_HTML
+
+
+@pytest.mark.parametrize(
+    "consumer",
+    ["content_only", "ignores_structured_content", "ignores_meta", "mcp_apps_capable"],
+)
+def test_standard_image_content_is_independent_of_optional_extensions(consumer):
+    """All host profiles can consume the same standards-first result.
+
+    A host may ignore structuredContent, result metadata, or the complete MCP
+    Apps extension. None of those optional surfaces may be the only carrier of
+    generated image bytes.
+    """
+    result = CallToolResult(
+        content=[
+            TextContent(type="text", text="Generated image successfully."),
+            _image(_png_bytes(), "image/png"),
+            _image(_jpeg_bytes(), "image/jpeg"),
+        ],
+        structuredContent={"artifacts": [{"artifact_id": "private"}]},
+        _meta={"ui": {"resourceUri": IMAGE_VIEWER_URI}},
+        isError=False,
+    )
+
+    visible_content = result.content
+    if consumer == "ignores_structured_content":
+        assert result.structuredContent is not None
+    elif consumer == "ignores_meta":
+        assert result.meta is not None
+    elif consumer == "mcp_apps_capable":
+        assert result.meta["ui"]["resourceUri"] == IMAGE_VIEWER_URI
+
+    assert isinstance(visible_content[0], TextContent)
+    images = [block for block in visible_content if isinstance(block, ImageContent)]
+    assert [block.mimeType for block in images] == ["image/png", "image/jpeg"]
+    for block in images:
+        decoded = base64.b64decode(block.data, validate=True)
+        with Image.open(io.BytesIO(decoded)) as image:
+            image.verify()
 
 
 def test_transport_diagnostics_record_completion_without_payload(monkeypatch, caplog):

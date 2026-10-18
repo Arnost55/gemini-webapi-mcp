@@ -2398,7 +2398,13 @@ async def gemini_switch_model(session_id: str, model: str, ctx: Context,
         "openWorldHint": True,
     },
     meta={
-        "ui": {"resourceUri": IMAGE_VIEWER_URI},
+        # MCP Apps is an optional presentation extension. The tool remains
+        # model-visible and returns complete standard MCP content regardless
+        # of whether a host advertises or renders the UI resource.
+        "ui": {
+            "resourceUri": IMAGE_VIEWER_URI,
+            "visibility": ["model", "app"],
+        },
         "openai/outputTemplate": IMAGE_VIEWER_URI,
         "openai/ui": {"availableDisplayModes": ["inline", "fullscreen"]},
     },

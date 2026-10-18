@@ -106,6 +106,7 @@ For browser-layout tests, install the optional extra and Chromium as described i
 - [Getting started](docs/getting-started.md) · [Installation](docs/installation.md) · [Configuration](docs/configuration.md)
 - [Authentication](docs/authentication.md) · [ChatGPT integration](docs/chatgpt-integration.md) · [Models](docs/models.md)
 - [Image generation](docs/image-generation.md) · [Media viewer](docs/media-viewer.md) · [Video status](docs/video.md) · [NotebookLM status](docs/notebooklm.md)
+- [Client compatibility](docs/client-compatibility.md)
 - [Architecture](docs/architecture.md) · [Security](docs/security.md) · [Troubleshooting](docs/troubleshooting.md) · [Backup and restore](docs/backup-and-restore.md)
 - [Development](docs/development.md) · [Release process](docs/release-process.md) · [v1.0.0 release notes](docs/release-1.0.0.md) · [Changelog](CHANGELOG.md)
 
