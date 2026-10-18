@@ -99,6 +99,18 @@ See the detailed [feature matrix](docs/feature-matrix.md) and
 viewer screenshot is included: add one only after capturing it from an
 authorized, real client session and checking it for private data.
 
+### Known image viewer limitations
+
+Image downloads may fail in embedded MCP clients. The viewer uses a host-provided
+download bridge when available and a browser download fallback otherwise; some
+client sandboxes block that fallback. If the download button does nothing, use
+the MCP client's own image save action. Fullscreen, regenerate, and edit actions
+also depend on the client exposing the required MCP App APIs, so those controls
+may be unavailable or unresponsive in some hosts. Local browser coverage does
+not guarantee identical behavior in every MCP client. See the [viewer
+troubleshooting notes](docs/media-viewer.md#known-client-dependent-issues) and
+[client compatibility matrix](docs/client-compatibility.md).
+
 ## MCP tools
 
 | Area | Tools |

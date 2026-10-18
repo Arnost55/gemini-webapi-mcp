@@ -11,6 +11,8 @@
 - Clarified that the project-hosted MCP endpoint runs on the operator's server,
   which state is encrypted, and that service availability is best effort.
 - Highlighted the free hosted option and no-code, plug-and-play connection path.
+- Documented known client-dependent image viewer issues, including blocked image
+  downloads and host API requirements for fullscreen and image actions.
 - Fixed expanded image overlays persisting after the MCP host exits fullscreen;
   downloads in clients without a host bridge now use a Blob URL. Published the
   cache-busted `v4` viewer resource while retaining v1/v2/v3 compatibility.
