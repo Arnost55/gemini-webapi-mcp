@@ -1,11 +1,16 @@
-# Gemini WebAPI MCP
+# Gemini Web MCP Server
 
-An open-source [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)
-server for Gemini Web. It provides Gemini chat, image generation and editing,
-file and URL analysis, and account-scoped browser sessions through MCP tools.
-Authentication uses Gemini Web browser sessions; this project is not a client
-for the official Gemini API. Google can change the web interface, protocol,
-account availability, and rate limits at any time.
+Free hosted and self-hostable [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)
+server for Google Gemini Web. Connect a compatible MCP client to chat with
+Gemini, analyze files and URLs, generate or edit images, and manage
+account-scoped conversations. Use the no-code hosted endpoint or run your own
+Python server over STDIO or Streamable HTTP; Docker Compose is provided for
+self-hosting.
+
+This project automates Gemini Web through browser sessions; it is not a client
+for the official Gemini API. Google can change its web interface, protocol,
+account availability, and rate limits at any time. The hosted MCP service is
+free to use; third-party account or client fees are separate.
 
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](https://www.python.org/)

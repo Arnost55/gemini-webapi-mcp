@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Improved GitHub search metadata and the project introduction with Gemini Web,
+  MCP transport, Docker Compose, file analysis, and image-generation keywords.
 - Reworked the GitHub README around accurate Gemini Web authentication,
   supported MCP features, client compatibility, and self-hosted Compose setup.
 - Added a navigable documentation index and contributor guide; documented the
