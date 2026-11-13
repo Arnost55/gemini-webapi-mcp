@@ -20,7 +20,7 @@ free to use; third-party account or client fees are separate.
 
 | Option | Best for | Setup |
 |---|---|---|
-| Hosted service | Free, plug-and-play access | Connect your MCP client to [`https://gemini.kernelkkicks.dev/mcp`](https://gemini.kernelkicks.dev/mcp). No coding, local installation, or server setup required. |
+| Hosted service | Free, plug-and-play access | Connect your MCP client to [`https://gemini.kernelkicks.dev/mcp`](https://gemini.kernelkicks.dev/mcp). No coding, local installation, or server setup required. |
 | Local STDIO | A client and server on the same computer | Install with `uv`, then launch `gemini-webapi-mcp --transport stdio`. |
 | Self-hosted Streamable HTTP | A server used by remote MCP clients | Run the Compose example behind a reviewed HTTPS proxy or secure tunnel. |
 
